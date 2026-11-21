@@ -1,0 +1,53 @@
+
+from flask import Flask, jsonify
+from flask_cors import CORS
+from dotenv import load_dotenv
+from flask_jwt_extended import JWTManager
+
+from app.config import Config
+from app.extensions import db, migrate
+from app.routes.health import health_bp
+from app.routes.auth import auth_bp
+from app.routes.admin import admin_bp
+from app.routes.withdrawals import withdrawal_bp
+
+
+def create_app(config_class=Config):
+    load_dotenv()
+
+    app = Flask(__name__)
+    app.config.from_object(config_class)
+
+    db.init_app(app)
+    migrate.init_app(app, db)
+    JWTManager(app)
+
+    CORS(
+        app,
+        resources={
+            r"/api/*": {
+                "origins": app.config["FRONTEND_ORIGIN"]
+            }
+        }
+    )
+
+    # Import models for SQLAlchemy
+    from app import models
+
+    # Register API routes
+    app.register_blueprint(health_bp)
+    app.register_blueprint(auth_bp)
+    app.register_blueprint(admin_bp)
+    app.register_blueprint(withdrawal_bp)
+
+    @app.get("/")
+    def index():
+        return jsonify({
+            "message": "AB PAY API is running",
+            "health": "/api/health"
+        })
+
+    with app.app_context():
+        db.create_all()
+
+    return app
