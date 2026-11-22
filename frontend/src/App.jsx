@@ -380,10 +380,11 @@ function App() {
           MAIN MENU
         </p>
         <nav className="space-y-2">
-          {NAV.filter(
-            ({ name }) =>
-              name !== "Admin Panel" || currentUser?.role === "admin",
-          ).map(({ name, icon: Icon }) => (
+          {NAV.filter(({ name }) => {
+            page === "Admin Panel" && currentUser?.role === "admin" && (
+              <AdminPage />
+            );
+          }).map(({ name, icon: Icon }) => (
             <button
               key={name}
               onClick={() => navigate(name)}
