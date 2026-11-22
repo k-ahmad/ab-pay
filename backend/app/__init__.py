@@ -1,4 +1,6 @@
 
+import re
+
 from flask import Flask, jsonify
 from flask_cors import CORS
 from dotenv import load_dotenv
@@ -27,11 +29,35 @@ def create_app(config_class=Config):
     migrate.init_app(app, db)
     JWTManager(app)
 
+    # Allowed frontend origins
+    allowed_origins = [
+        app.config["FRONTEND_ORIGIN"],
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+
+        # Vercel preview deployments for AB PAY
+        re.compile(
+            r"^https://ab-[a-z0-9-]+-kashi-9eb8\.vercel\.app$"
+        ),
+    ]
+
     CORS(
         app,
         resources={
             r"/api/*": {
-                "origins": app.config["FRONTEND_ORIGIN"]
+                "origins": allowed_origins,
+                "methods": [
+                    "GET",
+                    "POST",
+                    "PUT",
+                    "PATCH",
+                    "DELETE",
+                    "OPTIONS"
+                ],
+                "allow_headers": [
+                    "Content-Type",
+                    "Authorization"
+                ]
             }
         }
     )
