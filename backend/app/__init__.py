@@ -32,8 +32,13 @@ def create_app(config_class=Config):
     # Allowed frontend origins
     allowed_origins = [
         app.config["FRONTEND_ORIGIN"],
+
+        # Local development
         "http://localhost:5173",
         "http://127.0.0.1:5173",
+
+        # Production frontend
+        "https://ab-pay-two.vercel.app",
 
         # Vercel preview deployments for AB PAY
         re.compile(
