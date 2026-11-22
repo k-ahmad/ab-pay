@@ -15,7 +15,12 @@ from app.routes.withdrawals import withdrawal_bp
 def create_app(config_class=Config):
     load_dotenv()
 
-    app = Flask(__name__)
+    # Vercel filesystem is read-only except /tmp
+    app = Flask(
+        __name__,
+        instance_path="/tmp/ab-pay-instance"
+    )
+
     app.config.from_object(config_class)
 
     db.init_app(app)
