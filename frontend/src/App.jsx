@@ -379,19 +379,24 @@ function App() {
         <p className="mb-4 px-3 text-[10px] font-bold tracking-[0.24em] text-slate-500">
           MAIN MENU
         </p>
+
         <nav className="space-y-2">
-          {NAV.filter(({ name }) => {
-            page === "Admin Panel" && currentUser?.role === "admin" && (
-              <AdminPage />
-            );
-          }).map(({ name, icon: Icon }) => (
+          {NAV.filter(
+            ({ name }) =>
+              name !== "Admin Panel" || currentUser?.role === "admin",
+          ).map(({ name, icon: Icon }) => (
             <button
               key={name}
               onClick={() => navigate(name)}
-              className={`group flex w-full items-center gap-3 rounded-xl px-4 py-3.5 text-left text-sm transition ${page === name ? "border border-lime-300/20 bg-lime-300/[0.11] font-semibold text-lime-300 shadow-[inset_0_0_24px_rgba(190,242,100,0.04)]" : "text-slate-400 hover:bg-white/[0.05] hover:text-white"}`}
+              className={`group flex w-full items-center gap-3 rounded-xl px-4 py-3.5 text-left text-sm transition ${
+                page === name
+                  ? "border border-lime-300/20 bg-lime-300/[0.11] font-semibold text-lime-300 shadow-[inset_0_0_24px_rgba(190,242,100,0.04)]"
+                  : "text-slate-400 hover:bg-white/[0.05] hover:text-white"
+              }`}
             >
               <Icon size={19} strokeWidth={1.8} />
               <span>{name}</span>
+
               {page === name && (
                 <span className="ml-auto h-1.5 w-1.5 rounded-full bg-lime-300 shadow-[0_0_10px_#bef264]" />
               )}

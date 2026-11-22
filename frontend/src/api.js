@@ -70,6 +70,16 @@ export const withdrawalAPI = {
     }),
 };
 
+// Recharge APIs
+export const rechargeAPI = {
+  createRecharge: (token, payload) =>
+    apiRequest("/api/wallet/recharges", {
+      method: "POST",
+      token,
+      body: payload,
+    }),
+};
+
 // Admin APIs
 export const adminAPI = {
   listWithdrawals: (token, status = "all") =>
@@ -85,6 +95,32 @@ export const adminAPI = {
         method: "POST",
         token,
         body: { action },
+      }
+    ),
+
+  listRecharges: (token, status = "all") =>
+    apiRequest(
+      `/api/admin/recharges?status=${encodeURIComponent(status)}`,
+      { token }
+    ),
+
+  reviewRecharge: (token, publicId, action) =>
+    apiRequest(
+      `/api/admin/recharges/${encodeURIComponent(publicId)}/review`,
+      {
+        method: "POST",
+        token,
+        body: { action },
+      }
+    ),
+
+  creditWallet: (token, userId, amount) =>
+    apiRequest(
+      `/api/admin/users/${userId}/wallet/credit`,
+      {
+        method: "POST",
+        token,
+        body: { amount },
       }
     ),
 };

@@ -146,3 +146,96 @@ def create_withdrawal():
         return jsonify({
             "message": "Withdrawal request failed"
         }), 500
+
+@withdrawal_bp.post("/recharges")
+@jwt_required()
+def create_recharge():
+
+    user_id = int(get_jwt_identity())
+    data = request.get_json(silent=True) or {}
+
+    try:
+        amount = Decimal(str(data.get("amount", "")))
+
+        if (
+            not amount.is_finite()
+            or amount <= 0
+            or amount != amount.quantize(Decimal("0.01"))
+            or amount > Decimal("1000000.00")
+        ):
+            raise ValueError()
+
+    except (InvalidOperation, ValueError):
+        return jsonify({"message": "Invalid recharge amount"}), 400
+
+    payment_method = str(data.get("payment_method", "")).strip()
+    sender = str(data.get("sender", "")).strip()
+    reference = str(data.get("reference", "")).strip()
+    idempotency_key = str(data.get("idempotency_key", "")).strip() or None
+
+    if not payment_method or not sender or not reference:
+        return jsonify({
+            "message": "Payment method, sender and reference are required"
+        }), 400
+
+    if len(payment_method) > 32 or len(sender) > 64 or len(reference) > 100:
+        return jsonify({"message": "Payment details are too long"}), 400
+
+    if idempotency_key:
+        existing = Transaction.query.filter_by(
+            idempotency_key=idempotency_key
+        ).first()
+
+        if existing:
+            if existing.user_id != user_id:
+                return jsonify({"message": "Invalid idempotency key"}), 409
+
+            return jsonify({
+                "message": "Recharge request already submitted",
+                "transaction_id": existing.public_id,
+                "status": existing.status
+            }), 200
+
+    user = db.session.get(User, user_id)
+
+    if not user or user.status != "active":
+        return jsonify({"message": "Active account required"}), 403
+
+    wallet = Wallet.query.filter_by(
+        user_id=user_id
+    ).with_for_update().first()
+
+    if not wallet:
+        return jsonify({"message": "Wallet not found"}), 404
+
+    try:
+        transaction = Transaction(
+            public_id="ABP-" + secrets.token_hex(8).upper(),
+            user_id=user_id,
+            transaction_type="deposit",
+            payment_method=payment_method,
+            amount=amount,
+            status="pending",
+            sender_or_recipient=sender,
+            provider_reference=reference,
+            idempotency_key=idempotency_key,
+            review_note="Recharge submitted; awaiting admin verification"
+        )
+
+        db.session.add(transaction)
+        wallet.pending_balance += amount
+
+        db.session.commit()
+
+        return jsonify({
+            "message": "Recharge request submitted successfully",
+            "transaction_id": transaction.public_id,
+            "amount": str(amount),
+            "status": "pending",
+            "pending_balance": str(wallet.pending_balance),
+            "available_balance": str(wallet.available_balance)
+        }), 201
+
+    except Exception:
+        db.session.rollback()
+        return jsonify({"message": "Recharge request failed"}), 500
