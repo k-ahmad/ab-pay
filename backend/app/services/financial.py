@@ -1,35 +1,8 @@
 from decimal import Decimal
 
 from app.extensions import db
-from app.models.external_reference import ExternalReference
 from app.models.ledger_entry import LedgerEntry
 from app.models.audit_log import AuditLog
-
-
-def register_external_reference(reference, record_type, record_id, user_id):
-    """
-    Register a payment-provider reference globally.
-    Call inside the same DB transaction as the financial record.
-    The database unique constraint prevents cross-table duplicates.
-    """
-    reference = str(reference or "").strip()
-
-    if not reference:
-        return None
-
-    if len(reference) > 100:
-        raise ValueError("Payment reference is too long")
-
-    entry = ExternalReference(
-        reference=reference,
-        record_type=str(record_type),
-        record_id=int(record_id),
-        user_id=int(user_id),
-    )
-
-    db.session.add(entry)
-    db.session.flush()
-    return entry
 
 
 def add_ledger_entry(
