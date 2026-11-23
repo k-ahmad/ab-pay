@@ -1,15 +1,17 @@
-
 import secrets
 from decimal import Decimal, InvalidOperation
 
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, request, jsonify, current_app
 from flask_jwt_extended import jwt_required, get_jwt_identity
+from sqlalchemy.exc import IntegrityError
 
 from app.extensions import db
 from app.models.user import User
 from app.models.wallet import Wallet
 from app.models.transaction import Transaction
-from app.models.ledger_entry import LedgerEntry
+from app.models.payout_number import PayoutNumber
+from app.services.financial import add_ledger_entry, add_audit_log
+from app.services.validators import normalize_bd_phone
 
 
 withdrawal_bp = Blueprint(
@@ -19,11 +21,76 @@ withdrawal_bp = Blueprint(
 )
 
 
+def current_user_id():
+    try:
+        return int(get_jwt_identity())
+    except (TypeError, ValueError):
+        return None
+
+
+def is_verified_payout_number(user_id, payment_method, recipient):
+    """
+    True only if `recipient` is a payout number of this user that an admin
+    has verified for the same payment provider.
+    """
+    wanted_phone = normalize_bd_phone(recipient)
+
+    if not wanted_phone:
+        return False
+
+    verified = PayoutNumber.query.filter_by(
+        user_id=user_id,
+        status="verified"
+    ).all()
+
+    for item in verified:
+        if (
+            item.payment_method.strip().lower()
+            == payment_method.strip().lower()
+            and normalize_bd_phone(item.phone_number) == wanted_phone
+        ):
+            return True
+
+    return False
+
+
+def serialize_transaction(item):
+    return {
+        "id": item.public_id,
+        "transaction_id": item.public_id,
+        "type": item.transaction_type,
+        "amount": str(item.amount),
+        "payment_method": item.payment_method,
+        "recipient": item.sender_or_recipient,
+        "status": item.status,
+        "created_at": (
+            item.created_at.isoformat() if item.created_at else None
+        ),
+        "reviewed_at": (
+            item.reviewed_at.isoformat() if item.reviewed_at else None
+        ),
+        "review_note": item.review_note
+    }
+
+
+def read_page_args():
+    try:
+        limit = int(request.args.get("limit", 50))
+        offset = int(request.args.get("offset", 0))
+    except (TypeError, ValueError):
+        return None, None
+
+    return max(1, min(limit, 200)), max(0, offset)
+
+
 @withdrawal_bp.post("/withdrawals")
 @jwt_required()
 def create_withdrawal():
 
-    user_id = int(get_jwt_identity())
+    user_id = current_user_id()
+
+    if user_id is None:
+        return jsonify({"message": "Invalid session"}), 401
 
     data = request.get_json(silent=True) or {}
 
@@ -31,16 +98,18 @@ def create_withdrawal():
     try:
         amount = Decimal(str(data.get("amount", "")))
 
-        if not amount.is_finite() or amount <= 0:
-            raise ValueError()
-
-        if amount != amount.quantize(Decimal("0.01")):
+        if (
+            not amount.is_finite()
+            or amount < Decimal("100.00")
+            or amount != amount.quantize(Decimal("0.01"))
+        ):
             raise ValueError()
 
     except (InvalidOperation, ValueError):
-        return jsonify({"message": "Invalid withdrawal amount"}), 400
+        return jsonify({
+            "message": "Withdrawal amount must be at least 100.00"
+        }), 400
 
-    # Validate payment details
     payment_method = str(data.get("payment_method", "")).strip()
     recipient = str(data.get("recipient", "")).strip()
     idempotency_key = str(
@@ -62,16 +131,20 @@ def create_withdrawal():
             "message": "Invalid idempotency key"
         }), 400
 
-    # Prevent duplicate requests
+    # Check duplicate request
     if idempotency_key:
         existing = Transaction.query.filter_by(
             idempotency_key=idempotency_key
         ).first()
 
         if existing:
-            if existing.user_id != user_id:
+            if (
+                existing.user_id != user_id
+                or existing.transaction_type != "withdrawal"
+                or existing.amount != amount
+            ):
                 return jsonify({
-                    "message": "Invalid idempotency key"
+                    "message": "Idempotency key already used"
                 }), 409
 
             return jsonify({
@@ -83,22 +156,38 @@ def create_withdrawal():
     user = db.session.get(User, user_id)
 
     if not user or user.status != "active":
-        return jsonify({"message": "Active account required"}), 403
-
-    wallet = Wallet.query.filter_by(
-        user_id=user_id
-    ).with_for_update().first()
-
-    if not wallet:
-        return jsonify({"message": "Wallet not found"}), 404
-
-    if amount > wallet.available_balance:
         return jsonify({
-            "message": "Insufficient wallet balance",
-            "available_balance": str(wallet.available_balance)
-        }), 400
+            "message": "Active account required"
+        }), 403
+
+    # Money can only be sent to a number the admin has verified as yours.
+    if current_app.config.get("REQUIRE_VERIFIED_PAYOUT_NUMBER", True):
+        if not is_verified_payout_number(
+            user_id, payment_method, recipient
+        ):
+            return jsonify({
+                "message": (
+                    "Recipient must be one of your verified payout "
+                    "numbers for this payment method"
+                )
+            }), 400
 
     try:
+        wallet = Wallet.query.filter_by(
+            user_id=user_id
+        ).with_for_update().first()
+
+        if not wallet:
+            return jsonify({
+                "message": "Wallet not found"
+            }), 404
+
+        if amount > wallet.available_balance:
+            return jsonify({
+                "message": "Insufficient wallet balance",
+                "available_balance": str(wallet.available_balance)
+            }), 400
+
         new_available = wallet.available_balance - amount
         new_reserved = wallet.reserved_balance + amount
 
@@ -120,16 +209,29 @@ def create_withdrawal():
         wallet.available_balance = new_available
         wallet.reserved_balance = new_reserved
 
-        ledger = LedgerEntry(
+        add_ledger_entry(
             wallet_id=wallet.id,
             transaction_id=transaction.id,
             entry_type="debit",
             amount=amount,
             balance_after=new_available,
-            note="Withdrawal amount reserved"
+            idempotency_key=f"withdrawal:{transaction.public_id}:reserve",
+            note="Withdrawal amount moved from available to reserved balance"
         )
 
-        db.session.add(ledger)
+        add_audit_log(
+            actor_user_id=user_id,
+            action="withdrawal_requested",
+            entity_type="transaction",
+            entity_id=transaction.public_id,
+            details={
+                "amount": str(amount),
+                "payment_method": payment_method,
+                "status": "pending"
+            },
+            ip_address=request.remote_addr
+        )
+
         db.session.commit()
 
         return jsonify({
@@ -141,101 +243,91 @@ def create_withdrawal():
             "reserved_balance": str(new_reserved)
         }), 201
 
+    except IntegrityError:
+        db.session.rollback()
+        return jsonify({
+            "message": "Duplicate financial request detected"
+        }), 409
+
     except Exception:
         db.session.rollback()
         return jsonify({
             "message": "Withdrawal request failed"
         }), 500
 
-@withdrawal_bp.post("/recharges")
+
+@withdrawal_bp.get("/withdrawals")
 @jwt_required()
-def create_recharge():
+def my_withdrawals():
+    """The logged-in user's own withdrawal requests, newest first."""
 
-    user_id = int(get_jwt_identity())
-    data = request.get_json(silent=True) or {}
+    user_id = current_user_id()
 
-    try:
-        amount = Decimal(str(data.get("amount", "")))
+    if user_id is None:
+        return jsonify({"message": "Invalid session"}), 401
 
-        if (
-            not amount.is_finite()
-            or amount <= 0
-            or amount != amount.quantize(Decimal("0.01"))
-            or amount > Decimal("1000000.00")
-        ):
-            raise ValueError()
+    limit, offset = read_page_args()
 
-    except (InvalidOperation, ValueError):
-        return jsonify({"message": "Invalid recharge amount"}), 400
+    if limit is None:
+        return jsonify({"message": "Invalid limit or offset"}), 400
 
-    payment_method = str(data.get("payment_method", "")).strip()
-    sender = str(data.get("sender", "")).strip()
-    reference = str(data.get("reference", "")).strip()
-    idempotency_key = str(data.get("idempotency_key", "")).strip() or None
+    items = (
+        Transaction.query
+        .filter_by(user_id=user_id, transaction_type="withdrawal")
+        .order_by(Transaction.created_at.desc())
+        .limit(limit)
+        .offset(offset)
+        .all()
+    )
 
-    if not payment_method or not sender or not reference:
-        return jsonify({
-            "message": "Payment method, sender and reference are required"
-        }), 400
+    return jsonify({
+        "withdrawals": [serialize_transaction(item) for item in items],
+        "count": len(items),
+        "limit": limit,
+        "offset": offset
+    }), 200
 
-    if len(payment_method) > 32 or len(sender) > 64 or len(reference) > 100:
-        return jsonify({"message": "Payment details are too long"}), 400
 
-    if idempotency_key:
-        existing = Transaction.query.filter_by(
-            idempotency_key=idempotency_key
-        ).first()
+@withdrawal_bp.get("/transactions")
+@jwt_required()
+def my_transactions():
+    """
+    The logged-in user's own wallet transactions (deposits credited and
+    withdrawals), newest first. Optional filters: type, status.
+    """
 
-        if existing:
-            if existing.user_id != user_id:
-                return jsonify({"message": "Invalid idempotency key"}), 409
+    user_id = current_user_id()
 
-            return jsonify({
-                "message": "Recharge request already submitted",
-                "transaction_id": existing.public_id,
-                "status": existing.status
-            }), 200
+    if user_id is None:
+        return jsonify({"message": "Invalid session"}), 401
 
-    user = db.session.get(User, user_id)
+    limit, offset = read_page_args()
 
-    if not user or user.status != "active":
-        return jsonify({"message": "Active account required"}), 403
+    if limit is None:
+        return jsonify({"message": "Invalid limit or offset"}), 400
 
-    wallet = Wallet.query.filter_by(
-        user_id=user_id
-    ).with_for_update().first()
+    query = Transaction.query.filter_by(user_id=user_id)
 
-    if not wallet:
-        return jsonify({"message": "Wallet not found"}), 404
+    type_filter = request.args.get("type", "").strip().lower()
+    status_filter = request.args.get("status", "").strip().lower()
 
-    try:
-        transaction = Transaction(
-            public_id="ABP-" + secrets.token_hex(8).upper(),
-            user_id=user_id,
-            transaction_type="deposit",
-            payment_method=payment_method,
-            amount=amount,
-            status="pending",
-            sender_or_recipient=sender,
-            provider_reference=reference,
-            idempotency_key=idempotency_key,
-            review_note="Recharge submitted; awaiting admin verification"
-        )
+    if type_filter:
+        query = query.filter(Transaction.transaction_type == type_filter)
 
-        db.session.add(transaction)
-        wallet.pending_balance += amount
+    if status_filter:
+        query = query.filter(Transaction.status == status_filter)
 
-        db.session.commit()
+    items = (
+        query
+        .order_by(Transaction.created_at.desc())
+        .limit(limit)
+        .offset(offset)
+        .all()
+    )
 
-        return jsonify({
-            "message": "Recharge request submitted successfully",
-            "transaction_id": transaction.public_id,
-            "amount": str(amount),
-            "status": "pending",
-            "pending_balance": str(wallet.pending_balance),
-            "available_balance": str(wallet.available_balance)
-        }), 201
-
-    except Exception:
-        db.session.rollback()
-        return jsonify({"message": "Recharge request failed"}), 500
+    return jsonify({
+        "transactions": [serialize_transaction(item) for item in items],
+        "count": len(items),
+        "limit": limit,
+        "offset": offset
+    }), 200

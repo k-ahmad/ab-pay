@@ -1,22 +1,28 @@
+
 import secrets
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, request, jsonify, current_app
 from flask_jwt_extended import jwt_required, get_jwt_identity
+from sqlalchemy.exc import IntegrityError
 
 from app.extensions import db
 from app.models.user import User
 from app.models.wallet import Wallet
 from app.models.transaction import Transaction
-from app.models.ledger_entry import LedgerEntry
+
+from app.services.financial import (
+    add_ledger_entry,
+    add_audit_log,
+)
 
 
 admin_bp = Blueprint("admin", __name__, url_prefix="/api/admin")
 
 
 def get_admin():
-    """Return the authenticated admin user, or None for non-admin users."""
+    """Return authenticated admin user."""
     try:
         admin_id = int(get_jwt_identity())
     except (TypeError, ValueError):
@@ -33,21 +39,18 @@ def get_admin():
 @admin_bp.get("/withdrawals")
 @jwt_required()
 def get_withdrawals():
-    """
-    Return withdrawal requests for the admin panel.
 
-    Optional query parameter:
-      ?status=pending
-      ?status=approved
-      ?status=rejected
-      ?status=all
-    """
     if not get_admin():
         return jsonify({"message": "Admin access required"}), 403
 
     status_filter = request.args.get("status", "all").strip().lower()
 
-    allowed_statuses = {"all", "pending", "approved", "rejected"}
+    allowed_statuses = {
+        "all",
+        "pending",
+        "approved",
+        "rejected"
+    }
 
     if status_filter not in allowed_statuses:
         return jsonify({
@@ -63,7 +66,9 @@ def get_withdrawals():
         )
 
         if status_filter != "all":
-            query = query.filter(Transaction.status == status_filter)
+            query = query.filter(
+                Transaction.status == status_filter
+            )
 
         withdrawals = query.order_by(
             Transaction.created_at.desc()
@@ -112,7 +117,15 @@ def get_withdrawals():
 @jwt_required()
 def credit_wallet(user_id):
 
-    if not get_admin():
+    # Development-only tool. It is switched off unless the server runs with
+    # APP_ENV=development and ALLOW_TEST_CREDIT=true. When off, the route
+    # behaves as if it does not exist.
+    if not current_app.config.get("ALLOW_TEST_CREDIT"):
+        return jsonify({"message": "Not found"}), 404
+
+    admin = get_admin()
+
+    if not admin:
         return jsonify({"message": "Admin access required"}), 403
 
     data = request.get_json(silent=True) or {}
@@ -137,12 +150,14 @@ def credit_wallet(user_id):
     if not target_user:
         return jsonify({"message": "User not found"}), 404
 
-    wallet = Wallet.query.filter_by(user_id=user_id).first()
-
-    if not wallet:
-        return jsonify({"message": "Wallet not found"}), 404
-
     try:
+        wallet = Wallet.query.filter_by(
+            user_id=user_id
+        ).with_for_update().first()
+
+        if not wallet:
+            return jsonify({"message": "Wallet not found"}), 404
+
         new_balance = wallet.available_balance + amount
 
         transaction = Transaction(
@@ -160,16 +175,28 @@ def credit_wallet(user_id):
 
         wallet.available_balance = new_balance
 
-        ledger = LedgerEntry(
+        add_ledger_entry(
             wallet_id=wallet.id,
             transaction_id=transaction.id,
-            entry_type="credit",
             amount=amount,
             balance_after=new_balance,
+            entry_type="credit",
+            idempotency_key=f"admin-credit:{transaction.public_id}",
             note="Admin test balance credit"
         )
 
-        db.session.add(ledger)
+        add_audit_log(
+            actor_user_id=admin.id,
+            action="wallet_test_credit",
+            entity_type="transaction",
+            entity_id=transaction.public_id,
+            details={
+                "user_id": user_id,
+                "amount": str(amount)
+            },
+            ip_address=request.remote_addr
+        )
+
         db.session.commit()
 
         return jsonify({
@@ -179,20 +206,34 @@ def credit_wallet(user_id):
             "available_balance": str(new_balance)
         }), 200
 
+    except IntegrityError:
+        db.session.rollback()
+        return jsonify({
+            "message": "Duplicate financial entry"
+        }), 409
+
     except Exception:
         db.session.rollback()
-        return jsonify({"message": "Balance credit failed"}), 500
+        return jsonify({
+            "message": "Balance credit failed"
+        }), 500
 
 
 @admin_bp.post("/withdrawals/<string:public_id>/review")
 @jwt_required()
 def review_withdrawal(public_id):
 
-    if not get_admin():
+    admin = get_admin()
+
+    if not admin:
         return jsonify({"message": "Admin access required"}), 403
 
     data = request.get_json(silent=True) or {}
     action = str(data.get("action", "")).strip().lower()
+
+    # Optional for now so the current admin screen keeps working.
+    # Make it required when the admin screen sends a reason (Phase 2).
+    reason = str(data.get("reason") or "").strip()[:200]
 
     if action not in ("approve", "reject"):
         return jsonify({
@@ -206,9 +247,7 @@ def review_withdrawal(public_id):
         ).with_for_update().first()
 
         if not transaction:
-            return jsonify({
-                "message": "Withdrawal not found"
-            }), 404
+            return jsonify({"message": "Withdrawal not found"}), 404
 
         if transaction.status != "pending":
             return jsonify({
@@ -216,42 +255,39 @@ def review_withdrawal(public_id):
                 "status": transaction.status
             }), 409
 
+        # An admin must not approve or reject their own withdrawal.
+        if transaction.user_id == admin.id:
+            return jsonify({
+                "message": "Admin cannot review own withdrawal"
+            }), 403
+
         wallet = Wallet.query.filter_by(
             user_id=transaction.user_id
         ).with_for_update().first()
 
         if not wallet:
-            return jsonify({
-                "message": "Wallet not found"
-            }), 404
-
-        if wallet.reserved_balance < transaction.amount:
-            return jsonify({
-                "message": "Reserved balance is insufficient"
-            }), 409
+            return jsonify({"message": "Wallet not found"}), 404
 
         if action == "approve":
 
-            # Settle the reserved withdrawal amount.
-            wallet.reserved_balance -= transaction.amount
+            if wallet.reserved_balance < transaction.amount:
+                return jsonify({
+                    "message": "Reserved balance is insufficient"
+                }), 409
 
+            # Keep funds reserved until actual payout is confirmed.
             transaction.status = "approved"
             transaction.review_note = (
-                "Approved by admin; withdrawal marked as paid"
+                "Approved by admin; awaiting payout confirmation"
             )
-
-            db.session.add(LedgerEntry(
-                wallet_id=wallet.id,
-                transaction_id=transaction.id,
-                entry_type="withdrawal_settlement",
-                amount=transaction.amount,
-                balance_after=wallet.available_balance,
-                note="Approved withdrawal settled from reserved balance"
-            ))
 
         else:
 
-            # Refund rejected withdrawal to available balance.
+            if wallet.reserved_balance < transaction.amount:
+                return jsonify({
+                    "message": "Reserved balance is insufficient"
+                }), 409
+
             wallet.reserved_balance -= transaction.amount
             wallet.available_balance += transaction.amount
 
@@ -260,16 +296,39 @@ def review_withdrawal(public_id):
                 "Rejected by admin; funds refunded"
             )
 
-            db.session.add(LedgerEntry(
+            add_ledger_entry(
                 wallet_id=wallet.id,
                 transaction_id=transaction.id,
-                entry_type="credit",
                 amount=transaction.amount,
                 balance_after=wallet.available_balance,
-                note="Rejected withdrawal refunded to available balance"
-            ))
+                entry_type="credit",
+                idempotency_key=(
+                    f"withdrawal:{transaction.public_id}:refund"
+                ),
+                note="Rejected withdrawal refunded"
+            )
+
+        if reason:
+            transaction.review_note = (
+                f"{transaction.review_note} Reason: {reason}"
+            )[:255]
 
         transaction.reviewed_at = datetime.now(timezone.utc)
+        transaction.reviewed_by_id = admin.id
+
+        add_audit_log(
+            actor_user_id=admin.id,
+            action=f"withdrawal_{action}",
+            entity_type="transaction",
+            entity_id=transaction.public_id,
+            details={
+                "user_id": transaction.user_id,
+                "amount": str(transaction.amount),
+                "status": transaction.status,
+                "reason": reason or None
+            },
+            ip_address=request.remote_addr
+        )
 
         db.session.commit()
 
@@ -285,145 +344,14 @@ def review_withdrawal(public_id):
             "reserved_balance": str(wallet.reserved_balance)
         }), 200
 
+    except IntegrityError:
+        db.session.rollback()
+        return jsonify({
+            "message": "Duplicate financial entry"
+        }), 409
+
     except Exception:
         db.session.rollback()
-
         return jsonify({
             "message": "Withdrawal review failed"
         }), 500
-
-@admin_bp.get("/recharges")
-@jwt_required()
-def get_recharges():
-
-    if not get_admin():
-        return jsonify({"message": "Admin access required"}), 403
-
-    status_filter = request.args.get("status", "all").strip().lower()
-
-    if status_filter not in {"all", "pending", "successful", "rejected"}:
-        return jsonify({"message": "Invalid status filter"}), 400
-
-    try:
-        query = (
-            db.session.query(Transaction, User)
-            .join(User, User.id == Transaction.user_id)
-            .filter(Transaction.transaction_type == "deposit")
-            .filter(Transaction.payment_method != "admin_adjustment")
-        )
-
-        if status_filter != "all":
-            query = query.filter(Transaction.status == status_filter)
-
-        rows = query.order_by(Transaction.created_at.desc()).all()
-
-        results = []
-
-        for transaction, user in rows:
-            results.append({
-                "public_id": transaction.public_id,
-                "user_id": transaction.user_id,
-                "phone": user.phone,
-                "amount": str(transaction.amount),
-                "payment_method": transaction.payment_method,
-                "sender": transaction.sender_or_recipient,
-                "reference": transaction.provider_reference,
-                "status": transaction.status,
-                "created_at": (
-                    transaction.created_at.isoformat()
-                    if transaction.created_at else None
-                ),
-                "reviewed_at": (
-                    transaction.reviewed_at.isoformat()
-                    if transaction.reviewed_at else None
-                ),
-                "review_note": transaction.review_note
-            })
-
-        return jsonify({
-            "recharges": results,
-            "count": len(results)
-        }), 200
-
-    except Exception:
-        db.session.rollback()
-        return jsonify({"message": "Could not load recharge requests"}), 500
-
-
-@admin_bp.post("/recharges/<string:public_id>/review")
-@jwt_required()
-def review_recharge(public_id):
-
-    if not get_admin():
-        return jsonify({"message": "Admin access required"}), 403
-
-    data = request.get_json(silent=True) or {}
-    action = str(data.get("action", "")).strip().lower()
-
-    if action not in ("approve", "reject"):
-        return jsonify({"message": "Action must be approve or reject"}), 400
-
-    try:
-        transaction = Transaction.query.filter_by(
-            public_id=public_id,
-            transaction_type="deposit"
-        ).with_for_update().first()
-
-        if not transaction or transaction.payment_method == "admin_adjustment":
-            return jsonify({"message": "Recharge not found"}), 404
-
-        if transaction.status != "pending":
-            return jsonify({
-                "message": "Recharge has already been reviewed",
-                "status": transaction.status
-            }), 409
-
-        wallet = Wallet.query.filter_by(
-            user_id=transaction.user_id
-        ).with_for_update().first()
-
-        if not wallet:
-            return jsonify({"message": "Wallet not found"}), 404
-
-        if wallet.pending_balance < transaction.amount:
-            return jsonify({"message": "Pending balance is insufficient"}), 409
-
-        wallet.pending_balance -= transaction.amount
-
-        if action == "approve":
-            wallet.available_balance += transaction.amount
-            transaction.status = "successful"
-            transaction.review_note = "Payment verified and recharge approved"
-
-            db.session.add(LedgerEntry(
-                wallet_id=wallet.id,
-                transaction_id=transaction.id,
-                entry_type="credit",
-                amount=transaction.amount,
-                balance_after=wallet.available_balance,
-                note="Verified recharge credited to wallet"
-            ))
-
-        else:
-            transaction.status = "rejected"
-            transaction.review_note = "Recharge rejected by admin"
-
-        transaction.reviewed_at = datetime.now(timezone.utc)
-
-        db.session.commit()
-
-        return jsonify({
-            "message": (
-                "Recharge approved and wallet credited"
-                if action == "approve"
-                else "Recharge rejected"
-            ),
-            "transaction_id": transaction.public_id,
-            "status": transaction.status,
-            "available_balance": str(wallet.available_balance),
-            "pending_balance": str(wallet.pending_balance)
-        }), 200
-
-    except Exception:
-        db.session.rollback()
-        return jsonify({"message": "Recharge review failed"}), 500
