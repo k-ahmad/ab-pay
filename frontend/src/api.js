@@ -1,4 +1,3 @@
-
 const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:5001";
 
@@ -32,22 +31,34 @@ export async function apiRequest(path, options = {}) {
   const data = await response.json().catch(() => ({}));
 
   if (!response.ok) {
-    throw new Error(
+    const error = new Error(
       data.message ||
       data.error ||
       `Request failed (${response.status}).`
     );
+    error.status = response.status;
+    throw error;
   }
 
   return data;
 }
 
+// A fresh random key for every "Submit" click. If the same request is sent
+// twice (double click, network retry) the server returns the first result.
+export function newIdempotencyKey() {
+  if (typeof crypto !== "undefined" && crypto.randomUUID) {
+    return crypto.randomUUID();
+  }
+
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
+}
+
 // Authentication APIs
 export const authAPI = {
-  register: (phone, password, referral_code = "") =>
+  register: (name, phone, password, referral_code = "") =>
     apiRequest("/api/auth/register", {
       method: "POST",
-      body: { phone, password, referral_code },
+      body: { name, phone, password, referral_code },
     }),
 
   login: (phone, password) =>
@@ -60,7 +71,20 @@ export const authAPI = {
     apiRequest("/api/auth/me", { token }),
 };
 
-// Withdrawal APIs
+// Deposit APIs (user)
+export const depositAPI = {
+  create: (token, payload) =>
+    apiRequest("/api/wallet/deposits", {
+      method: "POST",
+      token,
+      body: payload,
+    }),
+
+  list: (token) =>
+    apiRequest("/api/wallet/deposits", { token }),
+};
+
+// Withdrawal APIs (user)
 export const withdrawalAPI = {
   create: (token, payload) =>
     apiRequest("/api/wallet/withdrawals", {
@@ -68,16 +92,9 @@ export const withdrawalAPI = {
       token,
       body: payload,
     }),
-};
 
-// Recharge APIs
-export const rechargeAPI = {
-  createRecharge: (token, payload) =>
-    apiRequest("/api/wallet/recharges", {
-      method: "POST",
-      token,
-      body: payload,
-    }),
+  list: (token, limit = 100) =>
+    apiRequest(`/api/wallet/withdrawals?limit=${limit}`, { token }),
 };
 
 // Admin APIs
@@ -88,39 +105,29 @@ export const adminAPI = {
       { token }
     ),
 
-  reviewWithdrawal: (token, publicId, action) =>
+  reviewWithdrawal: (token, publicId, action, reason) =>
     apiRequest(
       `/api/admin/withdrawals/${encodeURIComponent(publicId)}/review`,
       {
         method: "POST",
         token,
-        body: { action },
+        body: { action, reason },
       }
     ),
 
-  listRecharges: (token, status = "all") =>
+  listDeposits: (token, status = "all") =>
     apiRequest(
-      `/api/admin/recharges?status=${encodeURIComponent(status)}`,
+      `/api/admin/deposits?status=${encodeURIComponent(status)}`,
       { token }
     ),
 
-  reviewRecharge: (token, publicId, action) =>
+  reviewDeposit: (token, publicId, action, reason) =>
     apiRequest(
-      `/api/admin/recharges/${encodeURIComponent(publicId)}/review`,
+      `/api/admin/deposits/${encodeURIComponent(publicId)}/review`,
       {
         method: "POST",
         token,
-        body: { action },
-      }
-    ),
-
-  creditWallet: (token, userId, amount) =>
-    apiRequest(
-      `/api/admin/users/${userId}/wallet/credit`,
-      {
-        method: "POST",
-        token,
-        body: { amount },
+        body: { action, reason },
       }
     ),
 };

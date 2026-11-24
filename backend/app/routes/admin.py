@@ -231,13 +231,16 @@ def review_withdrawal(public_id):
     data = request.get_json(silent=True) or {}
     action = str(data.get("action", "")).strip().lower()
 
-    # Optional for now so the current admin screen keeps working.
-    # Make it required when the admin screen sends a reason (Phase 2).
     reason = str(data.get("reason") or "").strip()[:200]
 
     if action not in ("approve", "reject"):
         return jsonify({
             "message": "Action must be approve or reject"
+        }), 400
+
+    if not reason:
+        return jsonify({
+            "message": "Review reason is required"
         }), 400
 
     try:

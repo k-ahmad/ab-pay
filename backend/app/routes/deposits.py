@@ -14,10 +14,12 @@ from app.models.user import User
 from app.models.wallet import Wallet
 from app.models.deposit import Deposit
 from app.models.transaction import Transaction
+from app.models.external_reference import ExternalReference
 
 from app.services.financial import (
     add_audit_log,
     add_ledger_entry,
+    register_external_reference,
 )
 from app.services.validators import normalize_bd_phone
 
@@ -144,6 +146,14 @@ def create_deposit():
                 "status": existing_key.status
             }), 200
 
+        # A transaction reference can be used only once, by anyone.
+        if ExternalReference.query.filter_by(
+            reference=reference
+        ).first():
+            return jsonify({
+                "message": "Transaction reference already submitted"
+            }), 409
+
         deposit = Deposit(
             public_id=make_id(),
             user_id=user.id,
@@ -157,6 +167,13 @@ def create_deposit():
 
         db.session.add(deposit)
         db.session.flush()
+
+        register_external_reference(
+            reference=reference,
+            record_type="deposit",
+            record_id=deposit.id,
+            user_id=user.id
+        )
 
         add_audit_log(
             actor_user_id=user.id,
@@ -259,11 +276,19 @@ def admin_deposits():
         Deposit.created_at.desc()
     ).all()
 
+    phones = {
+        user.id: user.phone
+        for user in User.query.filter(
+            User.id.in_({item.user_id for item in rows})
+        ).all()
+    } if rows else {}
+
     return jsonify({
         "deposits": [
             {
                 "id": item.public_id,
                 "user_id": item.user_id,
+                "phone": phones.get(item.user_id),
                 "amount": str(item.amount),
                 "payment_method": item.payment_method,
                 "sender_number": item.sender_number,

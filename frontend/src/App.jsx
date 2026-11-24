@@ -1,5 +1,11 @@
-import { useEffect, useMemo, useState } from "react";
-import { authAPI, withdrawalAPI, adminAPI } from "./api";
+import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  authAPI,
+  depositAPI,
+  withdrawalAPI,
+  adminAPI,
+  newIdempotencyKey,
+} from "./api";
 import {
   Bell,
   Home,
@@ -65,12 +71,11 @@ const PROVIDERS = [
     color: "bg-orange-500",
     note: "Digital financial service",
   },
-  { name: "Uddokta", mark: "U", color: "bg-sky-500", note: "Payment provider" },
   {
-    name: "bKash Agent",
-    mark: "b",
-    color: "bg-violet-500",
-    note: "Agent payment",
+    name: "Rocket",
+    mark: "R",
+    color: "bg-purple-500",
+    note: "Mobile financial service",
   },
   {
     name: "UPay",
@@ -80,6 +85,48 @@ const PROVIDERS = [
   },
 ];
 
+const MIN_DEPOSIT = 100;
+const MAX_DEPOSIT = 200000;
+const BD_PHONE = /^(?:\+?88)?01\d{9}$/;
+const cleanPhone = (value) => String(value || "").replace(/[\s-]/g, "");
+
+const formatDate = (value) => {
+  if (!value) return "";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "" : date.toLocaleString();
+};
+
+const capitalize = (value) => {
+  const text = String(value || "pending").toLowerCase();
+  return text.charAt(0).toUpperCase() + text.slice(1);
+};
+
+const depositToRecord = (row) => ({
+  id: row.id,
+  type: "Recharge",
+  amount: Number(row.amount || 0),
+  method: row.payment_method || "",
+  account: row.sender_number || "",
+  reference: row.reference || "",
+  status: capitalize(row.status),
+  date: formatDate(row.created_at),
+  sortTime: new Date(row.created_at || 0).getTime(),
+  reviewNote: row.review_note || "",
+});
+
+const withdrawalToRecord = (row) => ({
+  id: row.id || row.transaction_id,
+  type: "Withdraw",
+  amount: Number(row.amount || 0),
+  method: row.payment_method || "",
+  account: row.recipient || "",
+  reference: "",
+  status: capitalize(row.status),
+  date: formatDate(row.created_at),
+  sortTime: new Date(row.created_at || 0).getTime(),
+  reviewNote: row.review_note || "",
+});
+
 const money = (value) =>
   new Intl.NumberFormat("en-BD", {
     minimumFractionDigits: 2,
@@ -88,8 +135,10 @@ const money = (value) =>
 
 function AuthPage({ onAuthSuccess }) {
   const [mode, setMode] = useState("login");
+  const [name, setName] = useState("");
   const [phone, setPhone] = useState("");
   const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
   const [referralCode, setReferralCode] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
@@ -97,13 +146,28 @@ function AuthPage({ onAuthSuccess }) {
   async function handleSubmit(e) {
     e.preventDefault();
     setError("");
+
+    if (mode === "register") {
+      if (name.trim().length < 2) {
+        return setError("Please enter your full name.");
+      }
+      if (password !== confirmPassword) {
+        return setError("Passwords do not match.");
+      }
+    }
+
     setLoading(true);
 
     try {
       const data =
         mode === "login"
           ? await authAPI.login(phone, password)
-          : await authAPI.register(phone, password, referralCode);
+          : await authAPI.register(
+              name.trim(),
+              phone,
+              password,
+              referralCode.trim(),
+            );
 
       onAuthSuccess(data);
     } catch (err) {
@@ -122,13 +186,29 @@ function AuthPage({ onAuthSuccess }) {
         </p>
 
         <form onSubmit={handleSubmit} className="mt-8 space-y-4">
+          {mode === "register" && (
+            <div>
+              <label className="text-sm text-gray-300">Full Name</label>
+              <input
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="Your full name"
+                required
+                minLength={2}
+                maxLength={120}
+                autoComplete="name"
+                className="mt-2 w-full rounded-lg bg-[#07110e] border border-white/10 p-3 outline-none focus:border-lime-400"
+              />
+            </div>
+          )}
+
           <div>
             <label className="text-sm text-gray-300">Phone Number</label>
             <input
               type="tel"
               value={phone}
               onChange={(e) => setPhone(e.target.value)}
-              placeholder="8801XXXXXXXXX"
+              placeholder="01XXXXXXXXX"
               required
               className="mt-2 w-full rounded-lg bg-[#07110e] border border-white/10 p-3 outline-none focus:border-lime-400"
             />
@@ -146,6 +226,21 @@ function AuthPage({ onAuthSuccess }) {
               className="mt-2 w-full rounded-lg bg-[#07110e] border border-white/10 p-3 outline-none focus:border-lime-400"
             />
           </div>
+
+          {mode === "register" && (
+            <div>
+              <label className="text-sm text-gray-300">Confirm Password</label>
+              <input
+                type="password"
+                value={confirmPassword}
+                onChange={(e) => setConfirmPassword(e.target.value)}
+                placeholder="Re-enter password"
+                required
+                minLength={8}
+                className="mt-2 w-full rounded-lg bg-[#07110e] border border-white/10 p-3 outline-none focus:border-lime-400"
+              />
+            </div>
+          )}
 
           {mode === "register" && (
             <div>
@@ -185,6 +280,7 @@ function AuthPage({ onAuthSuccess }) {
             onClick={() => {
               setMode(mode === "login" ? "register" : "login");
               setError("");
+              setConfirmPassword("");
             }}
             className="ml-2 text-lime-400 font-semibold"
           >
@@ -200,7 +296,9 @@ function App() {
   const [page, setPage] = useState("Home");
   const [mobileMenu, setMobileMenu] = useState(false);
   const [showBalance, setShowBalance] = useState(true);
-  const [transactions, setTransactions] = useState([]);
+  const [records, setRecords] = useState([]);
+  const [recordsLoading, setRecordsLoading] = useState(false);
+  const [recordsError, setRecordsError] = useState("");
   const [notice, setNotice] = useState("");
 
   const navigate = (next) => {
@@ -209,32 +307,19 @@ function App() {
     setNotice("");
   };
 
-  const addTransaction = (transaction, options = {}) => {
-    const created = {
-      ...transaction,
-      id: `ABP-${Date.now().toString().slice(-8)}`,
-      date: new Date().toLocaleString(),
-      status: "Pending",
-    };
-    setTransactions((current) => [created, ...current]);
-    if (!options.stayOnPage) setPage("Records");
-    setNotice("Your request has been added to the demo activity list.");
-    return created;
-  };
-
   const totalRecharge = useMemo(
     () =>
-      transactions
-        .filter((t) => t.type === "Recharge" && t.status === "Successful")
-        .reduce((sum, t) => sum + t.amount, 0),
-    [transactions],
+      records
+        .filter((r) => r.type === "Recharge" && r.status === "Approved")
+        .reduce((sum, r) => sum + r.amount, 0),
+    [records],
   );
   const totalWithdraw = useMemo(
     () =>
-      transactions
-        .filter((t) => t.type === "Withdraw" && t.status === "Successful")
-        .reduce((sum, t) => sum + t.amount, 0),
-    [transactions],
+      records
+        .filter((r) => r.type === "Withdraw" && r.status === "Approved")
+        .reduce((sum, r) => sum + r.amount, 0),
+    [records],
   );
 
   const PageIcon = NAV.find((item) => item.name === page)?.icon || Home;
@@ -254,9 +339,37 @@ function App() {
     return data;
   }
 
+  async function loadRecords() {
+    if (!authToken) return;
+    setRecordsLoading(true);
+    setRecordsError("");
+    try {
+      const [deposits, withdrawals] = await Promise.all([
+        depositAPI.list(authToken),
+        withdrawalAPI.list(authToken, 200),
+      ]);
+      const merged = [
+        ...(deposits.deposits || []).map(depositToRecord),
+        ...(withdrawals.withdrawals || []).map(withdrawalToRecord),
+      ].sort((a, b) => b.sortTime - a.sortTime);
+      setRecords(merged);
+    } catch (error) {
+      setRecordsError(error.message || "Could not load your records.");
+    } finally {
+      setRecordsLoading(false);
+    }
+  }
+
+  async function submitDeposit(payload) {
+    const result = await depositAPI.create(authToken, payload);
+    await loadRecords();
+    return result;
+  }
+
   async function submitWithdrawal(payload) {
     const result = await withdrawalAPI.create(authToken, payload);
     await refreshWallet();
+    await loadRecords();
 
     const created = {
       id: result.transaction_id || result.public_id,
@@ -268,12 +381,17 @@ function App() {
       date: new Date().toLocaleString(),
       status: "Pending",
     };
-    setTransactions((current) => [created, ...current]);
     setNotice(
       "Withdrawal request submitted. Wallet balance has been refreshed.",
     );
     return created;
   }
+
+  useEffect(() => {
+    if (currentUser && (page === "Home" || page === "Records")) {
+      loadRecords();
+    }
+  }, [currentUser?.id, page]);
 
   useEffect(() => {
     if (page === "Admin Panel" && currentUser?.role !== "admin") {
@@ -328,6 +446,7 @@ function App() {
     setAuthToken(null);
     setCurrentUser(null);
     setWallet(null);
+    setRecords([]);
     setPage("Home");
   }
 
@@ -454,12 +573,16 @@ function App() {
             </button>
 
             <div className="grid h-10 w-10 place-items-center rounded-full bg-gradient-to-br from-lime-300 to-emerald-400 font-bold text-[#09251a]">
-              A
+              {(currentUser?.name || "A").trim().charAt(0).toUpperCase()}
             </div>
 
             <div className="hidden sm:block">
-              <p className="text-xs font-semibold">AB PAY User</p>
-              <p className="mt-1 text-[10px] text-slate-500">Member Account</p>
+              <p className="text-xs font-semibold">
+                {currentUser?.name || "AB PAY User"}
+              </p>
+              <p className="mt-1 text-[10px] text-slate-500">
+                {currentUser?.role === "admin" ? "Administrator" : "Member Account"}
+              </p>
             </div>
 
             <button
@@ -487,7 +610,7 @@ function App() {
               showBalance={showBalance}
               setShowBalance={setShowBalance}
               navigate={navigate}
-              transactions={transactions}
+              transactions={records}
               totalRecharge={totalRecharge}
               totalWithdraw={totalWithdraw}
               walletBalance={wallet?.available_balance || "0.00"}
@@ -495,7 +618,7 @@ function App() {
           )}
 
           {page === "Recharge" && (
-            <RechargePage onSubmit={addTransaction} navigate={navigate} />
+            <RechargePage onSubmit={submitDeposit} navigate={navigate} />
           )}
 
           {page === "Withdraw" && (
@@ -507,7 +630,14 @@ function App() {
           )}
           {page === "Team" && <TeamPage />}
           {page === "Earn Rewards" && <RewardsPage />}
-          {page === "Records" && <RecordsPage transactions={transactions} />}
+          {page === "Records" && (
+            <RecordsPage
+              records={records}
+              loading={recordsLoading}
+              error={recordsError}
+              onRefresh={loadRecords}
+            />
+          )}
           {page === "Admin Panel" && currentUser?.role === "admin" && (
             <AdminPage
               token={authToken}
@@ -845,43 +975,75 @@ function RechargePage({ onSubmit, navigate }) {
   const [reference, setReference] = useState("");
   const [step, setStep] = useState(1);
   const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
   const [submitted, setSubmitted] = useState(null);
+  const keyRef = useRef(null);
+
+  // Same details = same key (a retry or double click can never create two
+  // deposits). Changed details = a new key.
+  const keyFor = (signature) => {
+    if (!keyRef.current || keyRef.current.signature !== signature) {
+      keyRef.current = { signature, key: newIdempotencyKey() };
+    }
+    return keyRef.current.key;
+  };
 
   const selectedProvider = PROVIDERS.find(
     (provider) => provider.name === method,
   );
+
   const continueToPayment = () => {
     if (!method) return setError("Please choose a payment method.");
-    if (!amount || !Number.isFinite(Number(amount)) || Number(amount) < 1)
-      return setError("Enter a valid amount of at least ৳1.");
-    if (Number(amount) > 1000000)
+    if (!/^\d+(\.\d{1,2})?$/.test(amount.trim()))
+      return setError("Enter a valid amount (up to 2 decimal places).");
+    if (Number(amount) < MIN_DEPOSIT || Number(amount) > MAX_DEPOSIT)
       return setError(
-        "For this demo, please enter an amount up to ৳1,000,000.",
+        `Recharge amount must be between ৳${money(MIN_DEPOSIT)} and ৳${money(MAX_DEPOSIT)}.`,
       );
     setError("");
     setStep(2);
   };
 
-  const submit = (event) => {
+  const submit = async (event) => {
     event.preventDefault();
-    if (!sender.trim() || !reference.trim())
+    if (loading) return;
+
+    const senderNumber = cleanPhone(sender);
+    const trxId = reference.trim();
+
+    if (!senderNumber || !trxId)
       return setError("Enter your sender account number and transaction ID.");
-    if (!/^[0-9+\s-]{8,20}$/.test(sender.trim()))
-      return setError("Enter a valid sender account number.");
-    if (reference.trim().length < 4)
+    if (!BD_PHONE.test(senderNumber))
+      return setError("Enter a valid Bangladeshi mobile number (01XXXXXXXXX).");
+    if (trxId.length < 4 || trxId.length > 100)
       return setError("Please check your transaction ID / reference.");
+
     setError("");
-    const request = onSubmit(
-      {
-        type: "Recharge",
-        amount: Number(amount),
+    setLoading(true);
+
+    const payload = {
+      amount: Number(amount),
+      payment_method: method,
+      sender_number: senderNumber,
+      provider_reference: trxId,
+    };
+
+    try {
+      const result = await onSubmit({
+        ...payload,
+        idempotency_key: keyFor(JSON.stringify(payload)),
+      });
+      setSubmitted({
+        id: result.deposit_id,
+        amount: Number(result.amount ?? amount),
         method,
-        reference: reference.trim(),
-        account: sender.trim(),
-      },
-      { stayOnPage: true },
-    );
-    setSubmitted(request);
+      });
+      keyRef.current = null;
+    } catch (err) {
+      setError(err.message || "Unable to submit recharge request.");
+    } finally {
+      setLoading(false);
+    }
   };
 
   if (submitted) {
@@ -889,7 +1051,7 @@ function RechargePage({ onSubmit, navigate }) {
       <>
         <PageHeading
           title="Recharge Request Submitted"
-          subtitle="Your demo request has been recorded successfully."
+          subtitle="Your request has been saved by the AB PAY server."
           icon={CheckCircle2}
         />
         <div className="mx-auto max-w-2xl">
@@ -900,13 +1062,13 @@ function RechargePage({ onSubmit, navigate }) {
               </span>
               <h2 className="mt-5 text-xl font-extrabold">Request Pending</h2>
               <p className="mt-2 text-sm leading-6 text-slate-400">
-                Your recharge request is saved in this browser demo. Your wallet
-                balance has not been changed.
+                Your recharge request is waiting for admin verification. Your
+                wallet balance will change only after an admin approves it.
               </p>
               <div className="mt-6 w-full rounded-2xl border border-white/10 bg-[#081f18] p-4 text-left">
                 <div className="flex justify-between gap-3 border-b border-white/[0.07] pb-3">
                   <span className="text-xs text-slate-500">Request ID</span>
-                  <span className="text-xs font-bold text-lime-300">
+                  <span className="break-all text-xs font-bold text-lime-300">
                     {submitted.id}
                   </span>
                 </div>
@@ -1034,7 +1196,8 @@ function RechargePage({ onSubmit, navigate }) {
             <Panel>
               <h2 className="font-bold">Recharge Amount</h2>
               <p className="mt-1 text-xs text-slate-500">
-                Enter the amount in Bangladeshi Taka.
+                Enter the amount in Bangladeshi Taka (৳{money(MIN_DEPOSIT)} to ৳
+                {money(MAX_DEPOSIT)}).
               </p>
               <div className="mt-5 grid grid-cols-2 gap-2">
                 {[500, 1000, 2000, 5000].map((value) => (
@@ -1055,8 +1218,8 @@ function RechargePage({ onSubmit, navigate }) {
                 <Field
                   label="Custom Amount (BDT)"
                   type="number"
-                  min="1"
-                  max="1000000"
+                  min={MIN_DEPOSIT}
+                  max={MAX_DEPOSIT}
                   step="1"
                   placeholder="Enter amount"
                   value={amount}
@@ -1116,13 +1279,13 @@ function RechargePage({ onSubmit, navigate }) {
                   instructions are not configured
                 </div>
                 <p className="mt-2 text-xs leading-5 text-slate-400">
-                  The client must provide verified receiver account details or
-                  an approved payment API before this section can display real
-                  payment instructions.
+                  The receiver account details are not set up yet. Only enter a
+                  transaction ID for a payment you have really made to the
+                  official AB PAY account.
                 </p>
                 <p className="mt-3 text-xs font-semibold leading-5 text-amber-100">
-                  Do not send money to any number or account based on this demo
-                  screen.
+                  Do not send money to any number shown outside the official
+                  AB PAY channels.
                 </p>
               </div>
               <div className="mt-4 rounded-xl border border-white/10 bg-[#081f18] p-4">
@@ -1153,8 +1316,8 @@ function RechargePage({ onSubmit, navigate }) {
             <Panel>
               <h2 className="font-bold">Payment Reference Details</h2>
               <p className="mt-1 text-xs leading-5 text-slate-500">
-                This demo records the details you enter. It does not verify a
-                payment.
+                An admin checks these details against the real payment before
+                your wallet is credited.
               </p>
               <form onSubmit={submit} className="mt-5 space-y-4">
                 <Field
@@ -1167,6 +1330,7 @@ function RechargePage({ onSubmit, navigate }) {
                 <Field
                   label="Transaction ID / Reference"
                   placeholder="Enter transaction ID"
+                  maxLength={100}
                   value={reference}
                   onChange={(e) => setReference(e.target.value)}
                 />
@@ -1175,12 +1339,13 @@ function RechargePage({ onSubmit, navigate }) {
                     {error}
                   </p>
                 )}
-                <PrimaryButton type="submit">
-                  Submit Recharge Request <ArrowUpRight size={17} />
+                <PrimaryButton type="submit" disabled={loading}>
+                  {loading ? "Submitting..." : "Submit Recharge Request"}{" "}
+                  <ArrowUpRight size={17} />
                 </PrimaryButton>
                 <p className="text-center text-[10px] leading-5 text-slate-500">
-                  Submitting creates a local pending request only. No payment is
-                  processed, verified, or credited to your wallet.
+                  Your wallet is credited only after an admin approves the
+                  request. A transaction ID can be used only once.
                 </p>
               </form>
             </Panel>
@@ -1871,22 +2036,21 @@ function RewardsPage() {
   );
 }
 
-function RecordsPage({ transactions }) {
+function RecordsPage({ records, loading, error, onRefresh }) {
   const [typeFilter, setTypeFilter] = useState("All");
   const [statusFilter, setStatusFilter] = useState("All");
   const [search, setSearch] = useState("");
 
-  const filteredTransactions = transactions.filter((transaction) => {
-    const matchesType = typeFilter === "All" || transaction.type === typeFilter;
+  const filteredRecords = records.filter((record) => {
+    const matchesType = typeFilter === "All" || record.type === typeFilter;
     const matchesStatus =
-      statusFilter === "All" || transaction.status === statusFilter;
+      statusFilter === "All" || record.status === statusFilter;
     const searchableText = [
-      transaction.id,
-      transaction.type,
-      transaction.method,
-      transaction.reference,
-      transaction.account,
-      transaction.accountName,
+      record.id,
+      record.type,
+      record.method,
+      record.reference,
+      record.account,
     ]
       .filter(Boolean)
       .join(" ")
@@ -1898,16 +2062,12 @@ function RecordsPage({ transactions }) {
     );
   });
 
-  const pendingCount = transactions.filter(
+  const pendingCount = records.filter(
     (item) => item.status === "Pending",
   ).length;
-  const successfulCount = transactions.filter(
-    (item) => item.status === "Successful",
-  ).length;
-  const totalRequested = transactions.reduce(
-    (sum, item) => sum + Number(item.amount || 0),
-    0,
-  );
+  const approvedRecharge = records
+    .filter((item) => item.type === "Recharge" && item.status === "Approved")
+    .reduce((sum, item) => sum + Number(item.amount || 0), 0);
 
   return (
     <>
@@ -1921,10 +2081,10 @@ function RecordsPage({ transactions }) {
         <div className="rounded-2xl border border-white/[0.08] bg-[#0b281e] p-4">
           <p className="text-xs text-slate-500">Total Requests</p>
           <p className="mt-2 text-2xl font-extrabold text-white">
-            {transactions.length}
+            {records.length}
           </p>
           <p className="mt-1 text-[10px] text-slate-500">
-            This browser session
+            Saved on your account
           </p>
         </div>
         <div className="rounded-2xl border border-amber-300/15 bg-amber-300/[0.05] p-4">
@@ -1933,16 +2093,16 @@ function RecordsPage({ transactions }) {
             {pendingCount}
           </p>
           <p className="mt-1 text-[10px] text-slate-500">
-            Awaiting backend review
+            Awaiting admin review
           </p>
         </div>
         <div className="rounded-2xl border border-lime-300/15 bg-lime-300/[0.05] p-4">
-          <p className="text-xs text-slate-500">Total Requested</p>
+          <p className="text-xs text-slate-500">Approved Recharges</p>
           <p className="mt-2 text-2xl font-extrabold text-lime-200">
-            ৳ {money(totalRequested)}
+            ৳ {money(approvedRecharge)}
           </p>
           <p className="mt-1 text-[10px] text-slate-500">
-            Not a confirmed wallet balance
+            Credited to your wallet
           </p>
         </div>
       </div>
@@ -1953,22 +2113,33 @@ function RecordsPage({ transactions }) {
             <div>
               <h2 className="font-bold">Wallet Activity</h2>
               <p className="mt-1 text-xs text-slate-500">
-                Recharge and withdrawal requests submitted in this browser
-                session.
+                Your recharge and withdrawal requests, loaded from the server.
               </p>
             </div>
-            <div className="relative w-full sm:max-w-xs">
-              <Search
-                size={16}
-                className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-500"
-              />
-              <input
-                type="search"
-                value={search}
-                onChange={(event) => setSearch(event.target.value)}
-                placeholder="Search ID, method or reference"
-                className="w-full rounded-xl border border-white/10 bg-[#081f18] py-3 pl-9 pr-3 text-xs text-white outline-none placeholder:text-slate-600 focus:border-lime-300/40"
-              />
+            <div className="flex w-full gap-2 sm:max-w-sm">
+              <div className="relative flex-1">
+                <Search
+                  size={16}
+                  className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-500"
+                />
+                <input
+                  type="search"
+                  value={search}
+                  onChange={(event) => setSearch(event.target.value)}
+                  placeholder="Search ID, method or reference"
+                  className="w-full rounded-xl border border-white/10 bg-[#081f18] py-3 pl-9 pr-3 text-xs text-white outline-none placeholder:text-slate-600 focus:border-lime-300/40"
+                />
+              </div>
+              <button
+                type="button"
+                onClick={onRefresh}
+                disabled={loading}
+                className="rounded-xl border border-white/10 px-3 text-slate-300 hover:text-lime-300 disabled:opacity-50"
+                title="Refresh"
+                aria-label="Refresh records"
+              >
+                <RefreshCw size={17} className={loading ? "animate-spin" : ""} />
+              </button>
             </div>
           </div>
 
@@ -1992,13 +2163,7 @@ function RecordsPage({ transactions }) {
               <span className="self-center pr-1 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
                 Status
               </span>
-              {[
-                "All",
-                "Pending",
-                "Approved (Demo)",
-                "Successful",
-                "Rejected",
-              ].map((item) => (
+              {["All", "Pending", "Approved", "Rejected"].map((item) => (
                 <button
                   key={item}
                   type="button"
@@ -2012,25 +2177,34 @@ function RecordsPage({ transactions }) {
           </div>
         </div>
 
-        {filteredTransactions.length ? (
+        {error && (
+          <p
+            role="alert"
+            className="mb-4 rounded-xl border border-rose-300/20 bg-rose-300/10 p-3 text-xs text-rose-200"
+          >
+            {error}
+          </p>
+        )}
+
+        {loading && !records.length ? (
+          <div className="py-10 text-center text-sm text-slate-400">
+            Loading your records...
+          </div>
+        ) : filteredRecords.length ? (
           <>
             <div className="mb-3 flex items-center justify-between text-[10px] text-slate-500">
               <span>
-                Showing {filteredTransactions.length} of {transactions.length}{" "}
-                requests
+                Showing {filteredRecords.length} of {records.length} requests
               </span>
-              <span>{successfulCount} successful overall</span>
             </div>
-            <TransactionList transactions={filteredTransactions} />
+            <TransactionList transactions={filteredRecords} />
           </>
         ) : (
           <EmptyState
             icon={FileText}
-            title={
-              transactions.length ? "No matching records" : "No records yet"
-            }
+            title={records.length ? "No matching records" : "No records yet"}
             description={
-              transactions.length
+              records.length
                 ? "Try changing your search or filters."
                 : "Your recharge and withdrawal requests will appear here after you submit them."
             }
@@ -2040,10 +2214,9 @@ function RecordsPage({ transactions }) {
         <div className="mt-5 flex items-start gap-3 rounded-xl border border-sky-300/15 bg-sky-300/[0.05] p-4 text-[10px] leading-5 text-slate-400">
           <Info size={16} className="mt-0.5 shrink-0 text-sky-300" />
           <p>
-            Demo notice: records are kept only in React memory during this
-            browser session. Requests are marked Pending and are not verified,
-            approved, rejected, or paid. Persistent history and real status
-            updates require the Flask backend and database.
+            Requests stay Pending until an admin reviews them. An approved
+            withdrawal means the request was accepted by admin; it is not an
+            automatic payout.
           </p>
         </div>
       </Panel>
@@ -2056,8 +2229,7 @@ function TransactionList({ transactions }) {
     <div className="divide-y divide-white/[0.07]">
       {transactions.map((transaction) => {
         const statusStyle =
-          transaction.status === "Successful" ||
-          transaction.status === "Approved (Demo)"
+          transaction.status === "Approved"
             ? "border-lime-300/20 bg-lime-300/10 text-lime-200"
             : transaction.status === "Rejected"
               ? "border-rose-300/20 bg-rose-300/10 text-rose-200"
@@ -2068,7 +2240,7 @@ function TransactionList({ transactions }) {
 
         return (
           <div
-            key={transaction.id}
+            key={`${transaction.type}-${transaction.id}`}
             className="flex flex-col gap-3 py-5 sm:flex-row sm:items-start"
           >
             <div
@@ -2099,15 +2271,18 @@ function TransactionList({ transactions }) {
               </p>
               {maskedAccount && (
                 <p className="mt-2 text-[10px] text-slate-400">
-                  Account: {maskedAccount}
-                  {transaction.accountName
-                    ? ` · ${transaction.accountName}`
-                    : ""}
+                  {transaction.type === "Recharge" ? "Sender" : "Recipient"}:{" "}
+                  {maskedAccount}
                 </p>
               )}
               {transaction.reference && (
                 <p className="mt-1 break-all text-[10px] text-slate-500">
                   Reference: {transaction.reference}
+                </p>
+              )}
+              {transaction.reviewNote && transaction.status !== "Pending" && (
+                <p className="mt-1 break-words text-[10px] text-slate-400">
+                  Admin note: {transaction.reviewNote}
                 </p>
               )}
             </div>
@@ -2138,63 +2313,186 @@ function EmptyState({ icon: Icon, title, description }) {
   );
 }
 
+function ReasonDialog({ item, action, kind, busy, error, onCancel, onConfirm }) {
+  const [reason, setReason] = useState("");
+  const [localError, setLocalError] = useState("");
+  const approve = action === "approve";
+  const label = kind === "deposits" ? "deposit" : "withdrawal";
+
+  const submit = (event) => {
+    event.preventDefault();
+    const text = reason.trim();
+    if (text.length < 3) {
+      return setLocalError("Please write a reason (at least 3 characters).");
+    }
+    setLocalError("");
+    onConfirm(text);
+  };
+
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/70 p-4">
+      <form
+        onSubmit={submit}
+        className="w-full max-w-md rounded-2xl border border-white/10 bg-[#0d2a20] p-6 shadow-2xl"
+      >
+        <h2 className="text-lg font-bold">
+          {approve ? "Approve" : "Reject"} {label}
+        </h2>
+        <p className="mt-1 break-all text-[11px] text-slate-500">
+          {item.id} · ৳ {money(item.amount)}
+        </p>
+        <p className="mt-3 text-xs leading-5 text-slate-400">
+          {approve
+            ? kind === "deposits"
+              ? "The amount will be added to the user's wallet. Confirm that you have checked the real payment and transaction ID."
+              : "The request will be marked approved. The amount stays reserved until the payout is recorded."
+            : kind === "deposits"
+              ? "The user's wallet will not be credited."
+              : "The reserved amount will be returned to the user's wallet."}
+        </p>
+        <label className="mt-4 block">
+          <span className="mb-2 block text-xs font-medium text-slate-300">
+            Reason (required)
+          </span>
+          <textarea
+            value={reason}
+            onChange={(e) => {
+              setReason(e.target.value);
+              setLocalError("");
+            }}
+            maxLength={200}
+            rows={3}
+            autoFocus
+            placeholder={
+              approve
+                ? "e.g. Payment found in bKash statement"
+                : "e.g. Transaction ID not found"
+            }
+            className="w-full rounded-xl border border-white/10 bg-[#081f18] px-4 py-3 text-sm text-white outline-none placeholder:text-slate-600 focus:border-lime-300/50"
+          />
+        </label>
+        {(localError || error) && (
+          <p role="alert" className="mt-3 text-xs text-rose-300">
+            {localError || error}
+          </p>
+        )}
+        <div className="mt-5 flex gap-3">
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={busy}
+            className="w-full rounded-xl border border-white/10 px-4 py-3 text-sm font-semibold text-slate-300 hover:bg-white/[0.05] disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button
+            type="submit"
+            disabled={busy}
+            className={`w-full rounded-xl px-4 py-3 text-sm font-bold disabled:opacity-50 ${approve ? "bg-lime-300 text-[#09251a]" : "bg-rose-400 text-white"}`}
+          >
+            {busy ? "Please wait..." : approve ? "Approve" : "Reject"}
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
 function AdminPage({ token, onNotice, onWalletRefresh }) {
-  const [filter, setFilter] = useState("all");
+  const [kind, setKind] = useState("deposits");
+  const [filter, setFilter] = useState("pending");
   const [search, setSearch] = useState("");
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [busyId, setBusyId] = useState("");
+  const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [dialog, setDialog] = useState(null);
+  const [dialogError, setDialogError] = useState("");
+  const requestCounter = useRef(0);
 
-  async function loadRequests(selectedFilter = filter) {
+  const mapDeposit = (row) => ({
+    id: row.id,
+    amount: Number(row.amount || 0),
+    method: row.payment_method || "Unknown",
+    account: row.sender_number || "",
+    reference: row.reference || "",
+    phone: row.phone || "",
+    user_id: row.user_id,
+    status: String(row.status || "pending").toLowerCase(),
+    date: formatDate(row.created_at),
+    reviewedAt: formatDate(row.reviewed_at),
+    reviewNote: row.review_note || "",
+  });
+
+  const mapWithdrawal = (row) => ({
+    id: row.public_id || row.transaction_id,
+    amount: Number(row.amount || 0),
+    method: row.payment_method || "Unknown",
+    account: row.sender_or_recipient || row.recipient || "",
+    reference: "",
+    phone: row.phone || "",
+    user_id: row.user_id,
+    status: String(row.status || "pending").toLowerCase(),
+    date: formatDate(row.created_at),
+    reviewedAt: formatDate(row.reviewed_at),
+    reviewNote: row.review_note || "",
+  });
+
+  async function loadRequests(selectedKind = kind, selectedFilter = filter) {
+    const requestId = ++requestCounter.current;
     setLoading(true);
     setError("");
     try {
-      const data = await adminAPI.listWithdrawals(token, selectedFilter);
-      const rows = (data.withdrawals || []).map((row) => ({
-        id: row.public_id || row.transaction_id,
-        type: "Withdraw",
-        amount: Number(row.amount || 0),
-        method: row.payment_method || "Unknown",
-        account: row.sender_or_recipient || "",
-        phone: row.phone || "",
-        user_id: row.user_id,
-        status: String(row.status || "pending").toLowerCase(),
-        date: row.created_at ? new Date(row.created_at).toLocaleString() : "—",
-        reviewedAt: row.reviewed_at
-          ? new Date(row.reviewed_at).toLocaleString()
-          : "—",
-        reviewNote: row.review_note || "",
-      }));
-      setItems(rows);
+      const data =
+        selectedKind === "deposits"
+          ? await adminAPI.listDeposits(token, selectedFilter)
+          : await adminAPI.listWithdrawals(token, selectedFilter);
+      if (requestId !== requestCounter.current) return;
+      setItems(
+        selectedKind === "deposits"
+          ? (data.deposits || []).map(mapDeposit)
+          : (data.withdrawals || []).map(mapWithdrawal),
+      );
     } catch (err) {
-      setError(err.message || "Could not load withdrawal requests.");
+      if (requestId === requestCounter.current) {
+        setError(err.message || "Could not load requests.");
+      }
     } finally {
-      setLoading(false);
+      if (requestId === requestCounter.current) setLoading(false);
     }
   }
 
   useEffect(() => {
-    loadRequests(filter);
-  }, [filter]);
+    setItems([]);
+    loadRequests(kind, filter);
+  }, [kind, filter]);
 
-  async function reviewRequest(item, action) {
-    setBusyId(item.id);
-    setError("");
+  async function confirmReview(reason) {
+    const { item, action } = dialog;
+    setBusy(true);
+    setDialogError("");
     try {
-      const result = await adminAPI.reviewWithdrawal(token, item.id, action);
-      onNotice?.(result.message || `Withdrawal ${action}d successfully.`);
-      await loadRequests(filter);
-      if (action === "reject") await onWalletRefresh?.();
+      const result =
+        kind === "deposits"
+          ? await adminAPI.reviewDeposit(token, item.id, action, reason)
+          : await adminAPI.reviewWithdrawal(token, item.id, action, reason);
+      setDialog(null);
+      onNotice?.(result.message || `Request ${action}d successfully.`);
+      await loadRequests(kind, filter);
+      try {
+        await onWalletRefresh?.();
+      } catch (refreshError) {
+        // The review itself already succeeded.
+      }
     } catch (err) {
-      setError(err.message || "Unable to review this request.");
+      setDialogError(err.message || "Unable to review this request.");
     } finally {
-      setBusyId("");
+      setBusy(false);
     }
   }
 
   const visible = items.filter((item) =>
-    [item.id, item.phone, item.method, item.account, item.status]
+    [item.id, item.phone, item.method, item.account, item.reference, item.status]
       .join(" ")
       .toLowerCase()
       .includes(search.toLowerCase().trim()),
@@ -2202,23 +2500,46 @@ function AdminPage({ token, onNotice, onWalletRefresh }) {
   const pending = items.filter((item) => item.status === "pending").length;
   const approved = items.filter((item) => item.status === "approved").length;
   const rejected = items.filter((item) => item.status === "rejected").length;
+  const isDeposits = kind === "deposits";
+  const noun = isDeposits ? "Deposit" : "Withdrawal";
 
   return (
     <>
       <PageHeading
         eyebrow="ADMINISTRATION · SECURE API"
         title="Admin Panel"
-        subtitle="Withdrawal requests loaded from the Flask backend."
+        subtitle="Deposit and withdrawal requests loaded from the Flask backend."
         icon={ShieldCheck}
       />
       <div className="mb-5 flex items-start gap-3 rounded-2xl border border-sky-300/20 bg-sky-300/[0.06] p-4 text-xs leading-5 text-sky-100">
         <Info size={18} className="mt-0.5 shrink-0" />
         <p>
-          Admin actions are checked by Flask using your account role. Approval
-          only changes the internal request status; it does not send a real
+          Admin actions are checked by Flask using your account role, and every
+          decision needs a written reason. Approving a deposit credits the
+          user's wallet. Approving a withdrawal does not send a real
           bKash/Nagad payment.
         </p>
       </div>
+
+      <div className="mb-5 flex gap-2">
+        {[
+          { label: "Deposits", value: "deposits" },
+          { label: "Withdrawals", value: "withdrawals" },
+        ].map((tab) => (
+          <button
+            key={tab.value}
+            type="button"
+            onClick={() => {
+              setKind(tab.value);
+              setSearch("");
+            }}
+            className={`rounded-xl px-5 py-3 text-sm font-bold transition ${kind === tab.value ? "bg-lime-300 text-[#09251a]" : "border border-white/10 text-slate-400 hover:text-white"}`}
+          >
+            {tab.label}
+          </button>
+        ))}
+      </div>
+
       <div className="mb-5 grid grid-cols-1 gap-3 sm:grid-cols-3">
         <div className="rounded-2xl border border-amber-300/15 bg-amber-300/[0.05] p-4">
           <p className="text-xs text-slate-500">Pending Requests</p>
@@ -2242,9 +2563,9 @@ function AdminPage({ token, onNotice, onWalletRefresh }) {
       <Panel>
         <div className="mb-5 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <h2 className="font-bold">Withdrawal Requests</h2>
+            <h2 className="font-bold">{noun} Requests</h2>
             <p className="mt-1 text-xs text-slate-500">
-              Requests are fetched from the database, not React demo state.
+              Requests are fetched from the database.
             </p>
           </div>
           <div className="flex gap-2">
@@ -2252,12 +2573,12 @@ function AdminPage({ token, onNotice, onWalletRefresh }) {
               type="search"
               value={search}
               onChange={(event) => setSearch(event.target.value)}
-              placeholder="Search ID, phone, method"
+              placeholder="Search ID, phone, reference"
               className="w-full rounded-xl border border-white/10 bg-[#081f18] px-3 py-3 text-xs text-white outline-none placeholder:text-slate-600 focus:border-lime-300/40"
             />
             <button
               type="button"
-              onClick={() => loadRequests(filter)}
+              onClick={() => loadRequests(kind, filter)}
               className="rounded-xl border border-white/10 px-3 text-slate-300 hover:text-lime-300"
               title="Refresh"
             >
@@ -2292,7 +2613,7 @@ function AdminPage({ token, onNotice, onWalletRefresh }) {
         )}
         {loading ? (
           <div className="py-10 text-center text-sm text-slate-400">
-            Loading withdrawal requests...
+            Loading {noun.toLowerCase()} requests...
           </div>
         ) : visible.length ? (
           <div className="divide-y divide-white/[0.07]">
@@ -2304,7 +2625,7 @@ function AdminPage({ token, onNotice, onWalletRefresh }) {
                 <div className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="text-sm font-bold text-white">
-                      Withdrawal · {item.method}
+                      {noun} · {item.method}
                     </span>
                     <span
                       className={`rounded-full border px-2.5 py-1 text-[9px] font-semibold ${item.status === "pending" ? "border-amber-300/20 bg-amber-300/10 text-amber-200" : item.status === "rejected" ? "border-rose-300/20 bg-rose-300/10 text-rose-200" : "border-lime-300/20 bg-lime-300/10 text-lime-200"}`}
@@ -2315,14 +2636,18 @@ function AdminPage({ token, onNotice, onWalletRefresh }) {
                   <p className="mt-1 break-all text-[10px] text-slate-500">
                     Request ID: {item.id} · {item.date}
                   </p>
-                  <p className="mt-2 text-[10px] text-slate-400">
-                    User: {item.phone || `#${item.user_id || "—"}`} · Recipient:{" "}
-                    {item.account
-                      ? `•••• ${item.account.slice(-4)}`
-                      : "Not provided"}
+                  <p className="mt-2 break-all text-[10px] text-slate-400">
+                    User: {item.phone || `#${item.user_id || "—"}`} ·{" "}
+                    {isDeposits ? "Sender" : "Recipient"}:{" "}
+                    {item.account || "Not provided"}
                   </p>
+                  {isDeposits && (
+                    <p className="mt-1 break-all text-[10px] text-slate-400">
+                      Transaction ID: {item.reference || "—"}
+                    </p>
+                  )}
                   {item.reviewNote && (
-                    <p className="mt-1 text-[10px] text-slate-500">
+                    <p className="mt-1 break-words text-[10px] text-slate-500">
                       Review note: {item.reviewNote}
                     </p>
                   )}
@@ -2335,17 +2660,21 @@ function AdminPage({ token, onNotice, onWalletRefresh }) {
                     <div className="flex gap-2">
                       <button
                         type="button"
-                        disabled={!!busyId}
-                        onClick={() => reviewRequest(item, "approve")}
-                        className="rounded-lg border border-lime-300/20 bg-lime-300/10 px-3 py-2 text-[10px] font-bold text-lime-200 hover:bg-lime-300/20 disabled:opacity-50"
+                        onClick={() => {
+                          setDialogError("");
+                          setDialog({ item, action: "approve" });
+                        }}
+                        className="rounded-lg border border-lime-300/20 bg-lime-300/10 px-3 py-2 text-[10px] font-bold text-lime-200 hover:bg-lime-300/20"
                       >
-                        {busyId === item.id ? "Please wait..." : "Approve"}
+                        Approve
                       </button>
                       <button
                         type="button"
-                        disabled={!!busyId}
-                        onClick={() => reviewRequest(item, "reject")}
-                        className="rounded-lg border border-rose-300/20 bg-rose-300/10 px-3 py-2 text-[10px] font-bold text-rose-200 hover:bg-rose-300/20 disabled:opacity-50"
+                        onClick={() => {
+                          setDialogError("");
+                          setDialog({ item, action: "reject" });
+                        }}
+                        className="rounded-lg border border-rose-300/20 bg-rose-300/10 px-3 py-2 text-[10px] font-bold text-rose-200 hover:bg-rose-300/20"
                       >
                         Reject
                       </button>
@@ -2362,11 +2691,24 @@ function AdminPage({ token, onNotice, onWalletRefresh }) {
         ) : (
           <EmptyState
             icon={FileText}
-            title="No withdrawal requests"
+            title={`No ${noun.toLowerCase()} requests`}
             description="There are no requests for this status filter."
           />
         )}
       </Panel>
+
+      {dialog && (
+        <ReasonDialog
+          key={`${dialog.item.id}-${dialog.action}`}
+          item={dialog.item}
+          action={dialog.action}
+          kind={kind}
+          busy={busy}
+          error={dialogError}
+          onCancel={() => setDialog(null)}
+          onConfirm={confirmReview}
+        />
+      )}
     </>
   );
 }

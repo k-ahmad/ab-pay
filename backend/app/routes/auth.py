@@ -87,11 +87,9 @@ def register():
             "message": "Password must be at most 128 characters"
         }), 400
 
-    # Name is optional for now so the current frontend keeps working.
-    # Make it required after the frontend sends it (Phase 2).
-    if name and not 2 <= len(name) <= 120:
+    if not 2 <= len(name) <= 120:
         return jsonify({
-            "message": "Name must be between 2 and 120 characters"
+            "message": "Name is required (2 to 120 characters)"
         }), 400
 
     # Older accounts may have been saved as 8801XXXXXXXXX, so check
@@ -114,7 +112,7 @@ def register():
             }), 400
 
     user = User(
-        name=name or None,
+        name=name,
         phone=phone,
         referral_code=generate_referral_code(),
         referred_by=referred_by
