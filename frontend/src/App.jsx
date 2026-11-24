@@ -450,15 +450,7 @@ function App() {
     setPage("Home");
   }
 
-  if (authLoading) {
-    return (
-      <div className="min-h-screen bg-[#07110e] flex items-center justify-center text-lime-400">
-        Loading AB PAY...
-      </div>
-    );
-  }
-
-  if (!currentUser) {
+  if (authLoading || !currentUser) {
     return <AuthPage onAuthSuccess={handleAuthSuccess} />;
   }
 
@@ -581,7 +573,9 @@ function App() {
                 {currentUser?.name || "AB PAY User"}
               </p>
               <p className="mt-1 text-[10px] text-slate-500">
-                {currentUser?.role === "admin" ? "Administrator" : "Member Account"}
+                {currentUser?.role === "admin"
+                  ? "Administrator"
+                  : "Member Account"}
               </p>
             </div>
 
@@ -1284,8 +1278,8 @@ function RechargePage({ onSubmit, navigate }) {
                   official AB PAY account.
                 </p>
                 <p className="mt-3 text-xs font-semibold leading-5 text-amber-100">
-                  Do not send money to any number shown outside the official
-                  AB PAY channels.
+                  Do not send money to any number shown outside the official AB
+                  PAY channels.
                 </p>
               </div>
               <div className="mt-4 rounded-xl border border-white/10 bg-[#081f18] p-4">
@@ -2138,7 +2132,10 @@ function RecordsPage({ records, loading, error, onRefresh }) {
                 title="Refresh"
                 aria-label="Refresh records"
               >
-                <RefreshCw size={17} className={loading ? "animate-spin" : ""} />
+                <RefreshCw
+                  size={17}
+                  className={loading ? "animate-spin" : ""}
+                />
               </button>
             </div>
           </div>
@@ -2313,7 +2310,15 @@ function EmptyState({ icon: Icon, title, description }) {
   );
 }
 
-function ReasonDialog({ item, action, kind, busy, error, onCancel, onConfirm }) {
+function ReasonDialog({
+  item,
+  action,
+  kind,
+  busy,
+  error,
+  onCancel,
+  onConfirm,
+}) {
   const [reason, setReason] = useState("");
   const [localError, setLocalError] = useState("");
   const approve = action === "approve";
@@ -2492,7 +2497,14 @@ function AdminPage({ token, onNotice, onWalletRefresh }) {
   }
 
   const visible = items.filter((item) =>
-    [item.id, item.phone, item.method, item.account, item.reference, item.status]
+    [
+      item.id,
+      item.phone,
+      item.method,
+      item.account,
+      item.reference,
+      item.status,
+    ]
       .join(" ")
       .toLowerCase()
       .includes(search.toLowerCase().trim()),
@@ -2516,8 +2528,8 @@ function AdminPage({ token, onNotice, onWalletRefresh }) {
         <p>
           Admin actions are checked by Flask using your account role, and every
           decision needs a written reason. Approving a deposit credits the
-          user's wallet. Approving a withdrawal does not send a real
-          bKash/Nagad payment.
+          user's wallet. Approving a withdrawal does not send a real bKash/Nagad
+          payment.
         </p>
       </div>
 
