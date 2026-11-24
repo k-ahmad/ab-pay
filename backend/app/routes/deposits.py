@@ -3,7 +3,7 @@ import secrets
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, current_app, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity
 
 from sqlalchemy.exc import IntegrityError
@@ -206,6 +206,7 @@ def create_deposit():
 
     except Exception:
         db.session.rollback()
+        current_app.logger.exception("deposit route failed")
 
         return jsonify({
             "message": "Deposit request failed"
@@ -467,6 +468,7 @@ def review_deposit(public_id):
 
     except Exception:
         db.session.rollback()
+        current_app.logger.exception("deposit route failed")
 
         return jsonify({
             "message": "Deposit review failed"
