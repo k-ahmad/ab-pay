@@ -65,7 +65,28 @@ def create_app(config_class=Config):
 
     db.init_app(app)
     migrate.init_app(app, db)
-    JWTManager(app)
+    jwt = JWTManager(app)
+
+    @jwt.token_in_blocklist_loader
+    def token_belongs_to_blocked_user(jwt_header, jwt_payload):
+        # A suspended (or removed) user's existing login tokens stop
+        # working immediately, on every protected endpoint.
+        from app.models.user import User
+
+        try:
+            user_id = int(jwt_payload.get("sub"))
+        except (TypeError, ValueError):
+            return True
+
+        user = db.session.get(User, user_id)
+        return user is None or user.status != "active"
+
+    @jwt.revoked_token_loader
+    def blocked_token_response(jwt_header, jwt_payload):
+        return jsonify({
+            "message": "Your session is no longer valid. "
+                       "Please log in again."
+        }), 401
 
     allowed_origins = [
         app.config["FRONTEND_ORIGIN"],

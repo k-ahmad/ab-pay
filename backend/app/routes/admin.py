@@ -449,3 +449,166 @@ def mark_withdrawal_paid(public_id):
         db.session.rollback()
         current_app.logger.exception("Could not mark withdrawal as paid")
         return jsonify({"message": "Could not mark withdrawal as paid"}), 500
+
+
+def _like_pattern(text):
+    """Escape % and _ so a search text is matched literally."""
+    cleaned = (
+        text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    )
+    return f"%{cleaned}%"
+
+
+@admin_bp.get("/users")
+@jwt_required()
+def list_users():
+    if not get_admin():
+        return jsonify({"message": "Admin access required"}), 403
+
+    status = request.args.get("status", "all").strip().lower()
+
+    if status not in {"all", "active", "suspended"}:
+        return jsonify({"message": "Invalid status filter"}), 400
+
+    try:
+        limit = int(request.args.get("limit", 100))
+        offset = int(request.args.get("offset", 0))
+    except ValueError:
+        return jsonify({"message": "limit and offset must be numbers"}), 400
+
+    limit = max(1, min(limit, 200))
+    offset = max(0, offset)
+
+    query = User.query
+
+    if status != "all":
+        query = query.filter(User.status == status)
+
+    search = request.args.get("search", "").strip()[:60]
+
+    if search:
+        pattern = _like_pattern(search)
+        query = query.filter(
+            User.phone.ilike(pattern, escape="\\")
+            | User.name.ilike(pattern, escape="\\")
+        )
+
+    total = query.count()
+    users = (
+        query.order_by(User.created_at.desc(), User.id.desc())
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+
+    wallets = {
+        wallet.user_id: wallet
+        for wallet in Wallet.query.filter(
+            Wallet.user_id.in_([user.id for user in users])
+        ).all()
+    } if users else {}
+
+    return jsonify({
+        "count": len(users),
+        "total": total,
+        "users": [
+            {
+                "id": user.id,
+                "name": user.name,
+                "phone": user.phone,
+                "role": user.role,
+                "status": user.status,
+                "created_at": (
+                    user.created_at.isoformat() if user.created_at else None
+                ),
+                "available_balance": str(
+                    wallets[user.id].available_balance
+                ) if user.id in wallets else "0.00",
+                "reserved_balance": str(
+                    wallets[user.id].reserved_balance
+                ) if user.id in wallets else "0.00",
+            }
+            for user in users
+        ],
+    }), 200
+
+
+@admin_bp.post("/users/<int:user_id>/status")
+@jwt_required()
+def set_user_status(user_id):
+    """Suspend or re-activate a user account (reason required)."""
+    admin = get_admin()
+
+    if not admin:
+        return jsonify({"message": "Admin access required"}), 403
+
+    data = request.get_json(silent=True) or {}
+    target = str(data.get("status") or "").strip().lower()
+    reason = str(data.get("reason") or "").strip()
+
+    if target not in ("active", "suspended"):
+        return jsonify({
+            "message": "Status must be active or suspended"
+        }), 400
+
+    if not 3 <= len(reason) <= 500:
+        return jsonify({
+            "message": "A reason (3 to 500 characters) is required"
+        }), 400
+
+    try:
+        user = User.query.filter_by(id=user_id).with_for_update().first()
+
+        if not user:
+            return jsonify({"message": "User not found"}), 404
+
+        if user.id == admin.id:
+            return jsonify({
+                "message": "You cannot change your own account status"
+            }), 403
+
+        if user.role == "admin":
+            return jsonify({
+                "message": "Admin accounts cannot be suspended here"
+            }), 403
+
+        if user.status == target:
+            return jsonify({
+                "message": f"User is already {target}"
+            }), 409
+
+        previous = user.status
+        user.status = target
+
+        add_audit_log(
+            actor_user_id=admin.id,
+            action="user_suspended" if target == "suspended" else "user_activated",
+            entity_type="user",
+            entity_id=user.id,
+            details={
+                "previous_status": previous,
+                "status": target,
+                "reason": reason,
+            },
+            ip_address=request.remote_addr,
+        )
+
+        db.session.commit()
+
+        return jsonify({
+            "message": (
+                "User suspended. Their active sessions have been closed."
+                if target == "suspended"
+                else "User account re-activated."
+            ),
+            "user": {
+                "id": user.id,
+                "phone": user.phone,
+                "status": user.status,
+            },
+        }), 200
+
+    except Exception:
+        db.session.rollback()
+        current_app.logger.exception("Could not change user status")
+        return jsonify({"message": "Could not change user status"}), 500

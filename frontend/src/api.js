@@ -113,6 +113,19 @@ export const payoutNumberAPI = {
 
 // Admin APIs
 export const adminAPI = {
+  listUsers: (token, { status = "all", search = "" } = {}) =>
+    apiRequest(
+      `/api/admin/users?status=${encodeURIComponent(status)}&search=${encodeURIComponent(search)}`,
+      { token },
+    ),
+
+  setUserStatus: (token, id, status, reason) =>
+    apiRequest(`/api/admin/users/${id}/status`, {
+      method: "POST",
+      token,
+      body: { status, reason },
+    }),
+
   listPayoutNumbers: (token, status = "pending") =>
     apiRequest(`/api/admin/payout-numbers?status=${encodeURIComponent(status)}`, { token }),
 

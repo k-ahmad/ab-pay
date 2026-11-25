@@ -76,7 +76,7 @@ def register():
     if not phone:
         return jsonify({
             "message": "Enter a valid phone number with country code "
-                       "(7 to 15 digits, for example +923001234567)"
+                       "(7 to 15 digits, for example +8801712345678)"
         }), 400
 
     if not isinstance(password, str) or len(password) < 8:
@@ -233,7 +233,8 @@ def login():
 
     if user.status != "active":
         return jsonify({
-            "message": "Account is not active"
+            "message": "This account has been suspended. "
+                       "Please contact support."
         }), 403
 
     if user.failed_login_attempts or user.locked_until:

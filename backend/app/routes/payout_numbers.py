@@ -101,7 +101,7 @@ def add_payout_number():
     if not phone_number:
         return jsonify({
             "message": "Enter a valid phone number with country code "
-                       "(7 to 15 digits, for example +923001234567)"
+                       "(7 to 15 digits, for example +8801712345678)"
         }), 400
 
     existing = PayoutNumber.query.filter(

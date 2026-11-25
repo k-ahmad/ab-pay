@@ -147,6 +147,63 @@ const money = (value) =>
     maximumFractionDigits: 2,
   }).format(value);
 
+function AuthField({
+  label,
+  icon: Icon,
+  hint,
+  trailing,
+  error,
+  className = "",
+  ...inputProps
+}) {
+  return (
+    <label className={`block ${className}`}>
+      <span className="mb-1.5 block text-xs font-semibold tracking-wide text-slate-300">
+        {label}
+      </span>
+      <span
+        className={`group flex items-center gap-3 rounded-xl border bg-[#081c15] px-3.5 transition focus-within:border-lime-300/60 focus-within:bg-[#0a2219] focus-within:ring-4 focus-within:ring-lime-300/10 ${error ? "border-rose-400/50" : "border-white/10 hover:border-white/20"}`}
+      >
+        {Icon && (
+          <Icon
+            size={17}
+            className="shrink-0 text-slate-500 transition group-focus-within:text-lime-300"
+          />
+        )}
+        <input
+          {...inputProps}
+          className="min-w-0 flex-1 bg-transparent py-3.5 text-sm text-white outline-none placeholder:text-slate-600"
+        />
+        {trailing}
+      </span>
+      {hint && !error && (
+        <span className="mt-1.5 block text-[11px] leading-4 text-slate-500">
+          {hint}
+        </span>
+      )}
+      {error && (
+        <span className="mt-1.5 block text-[11px] leading-4 text-rose-300">
+          {error}
+        </span>
+      )}
+    </label>
+  );
+}
+
+function PasswordToggle({ visible, onToggle }) {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      aria-label={visible ? "Hide password" : "Show password"}
+      title={visible ? "Hide password" : "Show password"}
+      className="-mr-1.5 grid h-9 w-9 shrink-0 place-items-center rounded-lg text-slate-500 transition hover:bg-white/5 hover:text-lime-300"
+    >
+      {visible ? <EyeOff size={17} /> : <Eye size={17} />}
+    </button>
+  );
+}
+
 function AuthPage({ onAuthSuccess }) {
   const [mode, setMode] = useState("login");
   const [name, setName] = useState("");
@@ -154,8 +211,22 @@ function AuthPage({ onAuthSuccess }) {
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [referralCode, setReferralCode] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const [showConfirm, setShowConfirm] = useState(false);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+
+  const isRegister = mode === "register";
+  const mismatch =
+    isRegister && confirmPassword.length > 0 && password !== confirmPassword;
+
+  function switchMode(next) {
+    setMode(next);
+    setError("");
+    setConfirmPassword("");
+    setShowPassword(false);
+    setShowConfirm(false);
+  }
 
   async function handleSubmit(e) {
     e.preventDefault();
@@ -163,11 +234,11 @@ function AuthPage({ onAuthSuccess }) {
 
     if (!isValidPhone(phone)) {
       return setError(
-        "Enter a valid phone number with country code (e.g. +923001234567).",
+        "Enter a valid phone number with country code (e.g. +8801712345678).",
       );
     }
 
-    if (mode === "register") {
+    if (isRegister) {
       if (name.trim().length < 2) {
         return setError("Please enter your full name.");
       }
@@ -179,15 +250,14 @@ function AuthPage({ onAuthSuccess }) {
     setLoading(true);
 
     try {
-      const data =
-        mode === "login"
-          ? await authAPI.login(phone, password)
-          : await authAPI.register(
-              name.trim(),
-              phone,
-              password,
-              referralCode.trim(),
-            );
+      const data = isRegister
+        ? await authAPI.register(
+            name.trim(),
+            phone,
+            password,
+            referralCode.trim(),
+          )
+        : await authAPI.login(phone, password);
 
       onAuthSuccess(data);
     } catch (err) {
@@ -198,114 +268,163 @@ function AuthPage({ onAuthSuccess }) {
   }
 
   return (
-    <div className="min-h-screen bg-[#07110e] flex items-center justify-center p-4 text-white">
-      <div className="w-full max-w-md rounded-2xl border border-white/10 bg-[#101d18] p-7 shadow-xl">
-        <h1 className="text-3xl font-bold text-lime-400 text-center">AB PAY</h1>
-        <p className="text-center text-gray-400 mt-2">
-          {mode === "login" ? "Welcome back" : "Create your account"}
-        </p>
+    <div className="relative min-h-screen overflow-hidden bg-[#06100c] px-4 py-8 text-white sm:flex sm:items-center sm:justify-center">
+      <div className="pointer-events-none absolute -left-32 -top-32 h-96 w-96 rounded-full bg-lime-300/10 blur-3xl" />
+      <div className="pointer-events-none absolute -bottom-40 -right-24 h-96 w-96 rounded-full bg-emerald-400/10 blur-3xl" />
 
-        <form onSubmit={handleSubmit} className="mt-8 space-y-4">
-          {mode === "register" && (
-            <div>
-              <label className="text-sm text-gray-300">Full Name</label>
-              <input
+      <div className="relative mx-auto w-full max-w-[420px]">
+        <div className="mb-6 flex flex-col items-center text-center">
+          <div className="grid h-14 w-14 place-items-center rounded-2xl bg-gradient-to-br from-lime-300 to-emerald-400 text-2xl font-black text-[#08261b] shadow-lg shadow-lime-300/20">
+            A
+          </div>
+          <h1 className="mt-4 text-2xl font-extrabold tracking-tight">
+            AB <span className="text-lime-300">PAY</span>
+          </h1>
+          <p className="mt-1 text-sm text-slate-400">
+            {isRegister
+              ? "Create your account in a minute"
+              : "Welcome back, sign in to continue"}
+          </p>
+        </div>
+
+        <div className="rounded-3xl border border-white/10 bg-[#0c1f18]/90 p-6 shadow-2xl shadow-black/40 backdrop-blur sm:p-7">
+          <div
+            role="tablist"
+            className="mb-6 grid grid-cols-2 rounded-xl bg-black/30 p-1"
+          >
+            {[
+              { value: "login", label: "Login" },
+              { value: "register", label: "Register" },
+            ].map((tab) => (
+              <button
+                key={tab.value}
+                type="button"
+                role="tab"
+                aria-selected={mode === tab.value}
+                onClick={() => switchMode(tab.value)}
+                className={`rounded-lg py-2.5 text-sm font-bold transition ${mode === tab.value ? "bg-lime-300 text-[#08261b] shadow" : "text-slate-400 hover:text-white"}`}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
+
+          <form onSubmit={handleSubmit} className="space-y-4" noValidate>
+            {isRegister && (
+              <AuthField
+                label="Full name"
+                icon={UserRound}
                 value={name}
                 onChange={(e) => setName(e.target.value)}
-                placeholder="Your full name"
-                required
-                minLength={2}
+                placeholder="e.g. Karim Uddin"
                 maxLength={120}
                 autoComplete="name"
-                className="mt-2 w-full rounded-lg bg-[#07110e] border border-white/10 p-3 outline-none focus:border-lime-400"
+                required
               />
-            </div>
-          )}
+            )}
 
-          <div>
-            <label className="text-sm text-gray-300">Phone Number</label>
-            <input
+            <AuthField
+              label="Phone number"
+              icon={Smartphone}
               type="tel"
+              inputMode="tel"
               value={phone}
               onChange={(e) => setPhone(e.target.value)}
-              placeholder="Country code + phone number (e.g. +923001234567)"
+              placeholder="+880 1XXX XXXXXX"
+              hint="Include your country code, for example +8801712345678"
+              autoComplete="tel"
               required
-              className="mt-2 w-full rounded-lg bg-[#07110e] border border-white/10 p-3 outline-none focus:border-lime-400"
             />
-          </div>
 
-          <div>
-            <label className="text-sm text-gray-300">Password</label>
-            <input
-              type="password"
+            <AuthField
+              label="Password"
+              icon={LockKeyhole}
+              type={showPassword ? "text" : "password"}
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              placeholder="Minimum 8 characters"
-              required
+              placeholder={isRegister ? "At least 8 characters" : "Your password"}
+              autoComplete={isRegister ? "new-password" : "current-password"}
               minLength={8}
-              className="mt-2 w-full rounded-lg bg-[#07110e] border border-white/10 p-3 outline-none focus:border-lime-400"
+              required
+              trailing={
+                <PasswordToggle
+                  visible={showPassword}
+                  onToggle={() => setShowPassword((value) => !value)}
+                />
+              }
             />
-          </div>
 
-          {mode === "register" && (
-            <div>
-              <label className="text-sm text-gray-300">Confirm Password</label>
-              <input
-                type="password"
+            {isRegister && (
+              <AuthField
+                label="Confirm password"
+                icon={ShieldCheck}
+                type={showConfirm ? "text" : "password"}
                 value={confirmPassword}
                 onChange={(e) => setConfirmPassword(e.target.value)}
-                placeholder="Re-enter password"
-                required
+                placeholder="Re-enter your password"
+                autoComplete="new-password"
                 minLength={8}
-                className="mt-2 w-full rounded-lg bg-[#07110e] border border-white/10 p-3 outline-none focus:border-lime-400"
+                required
+                error={mismatch ? "Passwords do not match yet" : ""}
+                trailing={
+                  <PasswordToggle
+                    visible={showConfirm}
+                    onToggle={() => setShowConfirm((value) => !value)}
+                  />
+                }
               />
-            </div>
-          )}
+            )}
 
-          {mode === "register" && (
-            <div>
-              <label className="text-sm text-gray-300">
-                Referral Code (Optional)
-              </label>
-              <input
+            {isRegister && (
+              <AuthField
+                label="Referral code (optional)"
+                icon={Gift}
                 value={referralCode}
                 onChange={(e) => setReferralCode(e.target.value)}
-                placeholder="Enter referral code"
-                className="mt-2 w-full rounded-lg bg-[#07110e] border border-white/10 p-3 outline-none focus:border-lime-400"
+                placeholder="Have a code? Enter it here"
+                autoComplete="off"
               />
-            </div>
-          )}
+            )}
 
-          {error && <p className="text-sm text-red-400">{error}</p>}
+            {error && (
+              <div
+                role="alert"
+                className="flex items-start gap-2 rounded-xl border border-rose-400/25 bg-rose-400/10 px-3.5 py-3 text-xs leading-5 text-rose-200"
+              >
+                <Info size={15} className="mt-0.5 shrink-0" />
+                <span>{error}</span>
+              </div>
+            )}
 
-          <button
-            type="submit"
-            disabled={loading}
-            className="w-full rounded-lg bg-lime-400 py-3 font-bold text-black hover:bg-lime-300 disabled:opacity-50"
-          >
-            {loading
-              ? "Please wait..."
-              : mode === "login"
-                ? "Login"
-                : "Create Account"}
-          </button>
-        </form>
+            <button
+              type="submit"
+              disabled={loading}
+              className="w-full rounded-xl bg-gradient-to-r from-lime-300 to-emerald-300 py-3.5 text-sm font-extrabold text-[#08261b] shadow-lg shadow-lime-300/10 transition hover:brightness-105 active:scale-[0.99] disabled:opacity-50"
+            >
+              {loading
+                ? "Please wait..."
+                : isRegister
+                  ? "Create account"
+                  : "Login"}
+            </button>
+          </form>
 
-        <p className="text-center text-sm text-gray-400 mt-6">
-          {mode === "login"
-            ? "Don't have an account?"
-            : "Already have an account?"}
-          <button
-            type="button"
-            onClick={() => {
-              setMode(mode === "login" ? "register" : "login");
-              setError("");
-              setConfirmPassword("");
-            }}
-            className="ml-2 text-lime-400 font-semibold"
-          >
-            {mode === "login" ? "Register" : "Login"}
-          </button>
+          <p className="mt-5 text-center text-xs text-slate-500">
+            {isRegister
+              ? "Already have an account?"
+              : "New to AB PAY?"}
+            <button
+              type="button"
+              onClick={() => switchMode(isRegister ? "login" : "register")}
+              className="ml-1.5 font-bold text-lime-300 hover:text-lime-200"
+            >
+              {isRegister ? "Login" : "Create an account"}
+            </button>
+          </p>
+        </div>
+
+        <p className="mt-5 flex items-center justify-center gap-1.5 text-[11px] text-slate-600">
+          <LockKeyhole size={12} /> Your password is never shown to anyone
         </p>
       </div>
     </div>
@@ -1087,7 +1206,7 @@ function RechargePage({ onSubmit, navigate }) {
       return setError("Enter your sender account number and transaction ID.");
     if (!isValidPhone(senderNumber))
       return setError(
-        "Enter a valid phone number with country code (e.g. +923001234567).",
+        "Enter a valid phone number with country code (e.g. +8801712345678).",
       );
     if (trxId.length < 4 || trxId.length > 100)
       return setError("Please check your transaction ID / reference.");
@@ -1397,7 +1516,7 @@ function RechargePage({ onSubmit, navigate }) {
                 <Field
                   label="Your Sender Account Number"
                   type="tel"
-                  placeholder="e.g. +923001234567"
+                  placeholder="e.g. +8801712345678"
                   value={sender}
                   onChange={(e) => setSender(e.target.value)}
                 />
@@ -2603,6 +2722,234 @@ function MarkPaidDialog({ item, busy, error, onCancel, onConfirm }) {
   );
 }
 
+function AdminUsers({ token, onNotice }) {
+  const [users, setUsers] = useState([]);
+  const [status, setStatus] = useState("all");
+  const [search, setSearch] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [dialog, setDialog] = useState(null);
+  const [reason, setReason] = useState("");
+  const [dialogError, setDialogError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const requestCounter = useRef(0);
+
+  async function load(nextStatus = status, nextSearch = search) {
+    const requestId = ++requestCounter.current;
+    setLoading(true);
+    setError("");
+    try {
+      const data = await adminAPI.listUsers(token, {
+        status: nextStatus,
+        search: nextSearch.trim(),
+      });
+      if (requestId === requestCounter.current) setUsers(data.users || []);
+    } catch (err) {
+      if (requestId === requestCounter.current) {
+        setError(err.message || "Could not load users.");
+      }
+    } finally {
+      if (requestId === requestCounter.current) setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => load(status, search), 250);
+    return () => window.clearTimeout(timer);
+  }, [status, search]);
+
+  async function confirm(event) {
+    event.preventDefault();
+    const text = reason.trim();
+    if (text.length < 3) {
+      return setDialogError("Please write a reason (at least 3 characters).");
+    }
+    setBusy(true);
+    setDialogError("");
+    try {
+      const result = await adminAPI.setUserStatus(
+        token,
+        dialog.user.id,
+        dialog.next,
+        text,
+      );
+      setDialog(null);
+      setReason("");
+      onNotice?.(result.message || "User updated.");
+      await load();
+    } catch (err) {
+      setDialogError(err.message || "Could not update this user.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const suspending = dialog?.next === "suspended";
+
+  return (
+    <>
+      <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex gap-2">
+          {[
+            { label: "All", value: "all" },
+            { label: "Active", value: "active" },
+            { label: "Suspended", value: "suspended" },
+          ].map((item) => (
+            <button
+              key={item.value}
+              type="button"
+              onClick={() => setStatus(item.value)}
+              className={`rounded-lg px-3 py-2 text-[11px] font-semibold transition ${status === item.value ? "bg-white text-[#09251a]" : "bg-white/[0.05] text-slate-400 hover:text-white"}`}
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+        <div className="flex items-center gap-2 rounded-xl border border-white/10 bg-[#081f18] px-3">
+          <Search size={15} className="text-slate-500" />
+          <input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search name or phone"
+            className="w-full bg-transparent py-2.5 text-xs text-white outline-none placeholder:text-slate-600 sm:w-60"
+          />
+        </div>
+      </div>
+
+      {error && (
+        <p role="alert" className="mb-3 text-xs text-rose-300">
+          {error}
+        </p>
+      )}
+
+      {loading && !users.length ? (
+        <div className="py-10 text-center text-sm text-slate-400">
+          Loading users...
+        </div>
+      ) : users.length ? (
+        <div className="space-y-3">
+          {users.map((user) => (
+            <div
+              key={user.id}
+              className="flex flex-col gap-3 rounded-2xl border border-white/[0.08] bg-[#081f18] p-4 sm:flex-row sm:items-center"
+            >
+              <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-lime-300/10 text-sm font-bold text-lime-300">
+                {(user.name || user.phone || "?").trim().charAt(0).toUpperCase()}
+              </span>
+              <div className="min-w-0 flex-1">
+                <p className="flex flex-wrap items-center gap-2 text-sm font-semibold">
+                  {user.name || "No name"}
+                  {user.role === "admin" && (
+                    <span className="rounded-full bg-sky-300/15 px-2 py-0.5 text-[10px] font-bold text-sky-200">
+                      ADMIN
+                    </span>
+                  )}
+                  <span
+                    className={`rounded-full px-2 py-0.5 text-[10px] font-bold uppercase ${user.status === "active" ? "bg-lime-300/15 text-lime-200" : "bg-rose-300/15 text-rose-200"}`}
+                  >
+                    {user.status}
+                  </span>
+                </p>
+                <p className="mt-1 text-xs text-slate-400">
+                  {user.phone} · Joined {formatDate(user.created_at)}
+                </p>
+                <p className="mt-1 text-[11px] text-slate-500">
+                  Balance ৳ {money(user.available_balance)} · Reserved ৳{" "}
+                  {money(user.reserved_balance)}
+                </p>
+              </div>
+              {user.role !== "admin" && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setReason("");
+                    setDialogError("");
+                    setDialog({
+                      user,
+                      next: user.status === "active" ? "suspended" : "active",
+                    });
+                  }}
+                  className={`rounded-lg border px-4 py-2 text-[11px] font-bold ${user.status === "active" ? "border-rose-300/20 text-rose-300 hover:bg-rose-300/10" : "border-lime-300/20 text-lime-200 hover:bg-lime-300/10"}`}
+                >
+                  {user.status === "active" ? "Suspend" : "Activate"}
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="py-10 text-center text-sm text-slate-400">
+          No users found.
+        </div>
+      )}
+
+      {dialog && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/70 p-4">
+          <form
+            onSubmit={confirm}
+            className="w-full max-w-md rounded-2xl border border-white/10 bg-[#0d2a20] p-6 shadow-2xl"
+          >
+            <h2 className="text-lg font-bold">
+              {suspending ? "Suspend" : "Re-activate"} user
+            </h2>
+            <p className="mt-1 text-[11px] text-slate-500">
+              {dialog.user.name || "No name"} · {dialog.user.phone}
+            </p>
+            <p className="mt-3 text-xs leading-5 text-slate-400">
+              {suspending
+                ? "The user will be logged out at once and cannot log in, deposit or withdraw until you activate the account again."
+                : "The user will be able to log in and use their wallet again."}
+            </p>
+            <label className="mt-4 block">
+              <span className="mb-2 block text-xs font-medium text-slate-300">
+                Reason (required)
+              </span>
+              <textarea
+                value={reason}
+                onChange={(e) => {
+                  setReason(e.target.value);
+                  setDialogError("");
+                }}
+                maxLength={500}
+                rows={3}
+                autoFocus
+                placeholder={
+                  suspending
+                    ? "e.g. Suspicious activity reported"
+                    : "e.g. Identity checked, account cleared"
+                }
+                className="w-full rounded-xl border border-white/10 bg-[#081f18] px-4 py-3 text-sm text-white outline-none placeholder:text-slate-600 focus:border-lime-300/50"
+              />
+            </label>
+            {dialogError && (
+              <p role="alert" className="mt-3 text-xs text-rose-300">
+                {dialogError}
+              </p>
+            )}
+            <div className="mt-5 flex gap-3">
+              <button
+                type="button"
+                onClick={() => setDialog(null)}
+                disabled={busy}
+                className="w-full rounded-xl border border-white/10 px-4 py-3 text-sm font-semibold text-slate-300 hover:bg-white/5 disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={busy}
+                className={`w-full rounded-xl px-4 py-3 text-sm font-bold disabled:opacity-50 ${suspending ? "bg-rose-400 text-[#2a0a10]" : "bg-lime-300 text-[#09251a]"}`}
+              >
+                {busy ? "Please wait..." : suspending ? "Suspend" : "Activate"}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+    </>
+  );
+}
+
 function AdminPage({ token, onNotice, onWalletRefresh }) {
   const [kind, setKind] = useState("deposits");
   const [filter, setFilter] = useState("all");
@@ -2644,6 +2991,10 @@ function AdminPage({ token, onNotice, onWalletRefresh }) {
   });
 
   async function loadRequests(selectedKind = kind, selectedFilter = filter) {
+    if (selectedKind === "users") {
+      setLoading(false);
+      return;
+    }
     const requestId = ++requestCounter.current;
     setLoading(true);
     setError("");
@@ -2787,6 +3138,7 @@ function AdminPage({ token, onNotice, onWalletRefresh }) {
           { label: "Deposits", value: "deposits" },
           { label: "Withdrawals", value: "withdrawals" },
           { label: "Payout Numbers", value: "payout-numbers" },
+          { label: "Users", value: "users" },
         ].map((tab) => (
           <button
             key={tab.value}
@@ -2802,6 +3154,10 @@ function AdminPage({ token, onNotice, onWalletRefresh }) {
         ))}
       </div>
 
+      {kind === "users" ? (
+        <AdminUsers token={token} onNotice={onNotice} />
+      ) : (
+        <>
       <div className="mb-5 grid grid-cols-1 gap-3 sm:grid-cols-3">
         <div className="rounded-2xl border border-amber-300/15 bg-amber-300/[0.05] p-4">
           <p className="text-xs text-slate-500">Pending Requests</p>
@@ -3002,6 +3358,8 @@ function AdminPage({ token, onNotice, onWalletRefresh }) {
           onConfirm={confirmReview}
         />
       )}
+        </>
+      )}
     </>
   );
 }
@@ -3089,7 +3447,7 @@ function ProfilePage({ navigate, setNotice, token }) {
     }
     if (!isValidPhone(accountNumber)) {
       setAccountError(
-        "Enter a valid phone number with country code (e.g. +923001234567).",
+        "Enter a valid phone number with country code (e.g. +8801712345678).",
       );
       return;
     }
@@ -3313,7 +3671,7 @@ function ProfilePage({ navigate, setNotice, token }) {
                       value={accountNumber}
                       onChange={(event) => setAccountNumber(event.target.value)}
                       type="tel"
-                      placeholder="e.g. +923001234567"
+                      placeholder="e.g. +8801712345678"
                       className="w-full rounded-xl border border-white/10 bg-[#0d2a20] px-4 py-3 text-sm text-white outline-none placeholder:text-slate-600 focus:border-lime-300/50"
                     />
                   </label>
