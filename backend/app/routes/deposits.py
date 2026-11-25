@@ -14,6 +14,7 @@ from app.models.user import User
 from app.models.wallet import Wallet
 from app.models.deposit import Deposit
 from app.models.transaction import Transaction
+from app.models.payout_number import PayoutNumber
 from app.models.external_reference import ExternalReference
 
 from app.services.financial import (
@@ -21,7 +22,7 @@ from app.services.financial import (
     add_ledger_entry,
     register_external_reference,
 )
-from app.services.validators import normalize_bd_phone
+from app.services.validators import normalize_phone, phone_variants
 
 
 deposit_bp = Blueprint(
@@ -89,8 +90,8 @@ def create_deposit():
         data.get("payment_method", "")
     ).strip()
 
-    # Saved as 01XXXXXXXXX whether the user typed 01..., 8801... or +8801...
-    sender_number = normalize_bd_phone(
+    # Normalize sender phone while allowing international country codes.
+    sender_number = normalize_phone(
         data.get("sender_number", "")
     )
 
@@ -109,7 +110,7 @@ def create_deposit():
 
     if not sender_number:
         return jsonify({
-            "message": "Invalid Bangladeshi mobile number"
+            "message": "Invalid phone number. Include the country code."
         }), 400
 
     if not 4 <= len(reference) <= 100:
@@ -154,6 +155,17 @@ def create_deposit():
                 "message": "Transaction reference already submitted"
             }), 409
 
+        # One mobile number can belong to one account only.
+        linked_number = PayoutNumber.query.filter(
+            PayoutNumber.phone_number.in_(phone_variants(sender_number))
+        ).first()
+
+        if linked_number and linked_number.user_id != user.id:
+            return jsonify({
+                "message": "This sender number is already linked to "
+                           "another account"
+            }), 409
+
         deposit = Deposit(
             public_id=make_id(),
             user_id=user.id,
@@ -174,6 +186,32 @@ def create_deposit():
             record_id=deposit.id,
             user_id=user.id
         )
+
+        # The sender number is saved for the user as a Pending payout
+        # number (an admin must verify it before it can receive money).
+        if not linked_number:
+            saved_number = PayoutNumber(
+                user_id=user.id,
+                payment_method=provider.lower(),
+                phone_number=sender_number,
+                status="pending",
+                is_default=False,
+            )
+            db.session.add(saved_number)
+            db.session.flush()
+
+            add_audit_log(
+                actor_user_id=user.id,
+                action="payout_number_auto_saved",
+                entity_type="payout_number",
+                entity_id=saved_number.id,
+                details={
+                    "payment_method": saved_number.payment_method,
+                    "phone_number": sender_number,
+                    "source_deposit": deposit.public_id,
+                },
+                ip_address=request.remote_addr,
+            )
 
         add_audit_log(
             actor_user_id=user.id,

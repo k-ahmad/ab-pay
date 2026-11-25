@@ -11,7 +11,7 @@ from app.models.wallet import Wallet
 from app.models.transaction import Transaction
 from app.models.payout_number import PayoutNumber
 from app.services.financial import add_ledger_entry, add_audit_log
-from app.services.validators import normalize_bd_phone
+from app.services.validators import normalize_phone
 
 
 withdrawal_bp = Blueprint(
@@ -33,7 +33,7 @@ def is_verified_payout_number(user_id, payment_method, recipient):
     True only if `recipient` is a payout number of this user that an admin
     has verified for the same payment provider.
     """
-    wanted_phone = normalize_bd_phone(recipient)
+    wanted_phone = normalize_phone(recipient)
 
     if not wanted_phone:
         return False
@@ -47,7 +47,7 @@ def is_verified_payout_number(user_id, payment_method, recipient):
         if (
             item.payment_method.strip().lower()
             == payment_method.strip().lower()
-            and normalize_bd_phone(item.phone_number) == wanted_phone
+            and normalize_phone(item.phone_number) == wanted_phone
         ):
             return True
 
@@ -62,6 +62,12 @@ def serialize_transaction(item):
         "amount": str(item.amount),
         "payment_method": item.payment_method,
         "recipient": item.sender_or_recipient,
+        "provider_reference": item.provider_reference,
+        "trx_id": (
+            item.provider_reference
+            if item.transaction_type == "withdrawal" and item.status == "paid"
+            else None
+        ),
         "status": item.status,
         "created_at": (
             item.created_at.isoformat() if item.created_at else None

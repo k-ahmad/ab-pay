@@ -1,13 +1,13 @@
 from datetime import datetime, timezone
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, current_app, jsonify, request
 from flask_jwt_extended import get_jwt_identity, jwt_required
 from sqlalchemy.exc import IntegrityError
 
 from app.extensions import db
-from app.models import PayoutNumber, User
+from app.models import PayoutNumber, Transaction, User
 from app.services.financial import add_audit_log
-from app.services.validators import normalize_bd_phone, phone_variants
+from app.services.validators import normalize_phone, phone_variants
 
 
 payout_number_bp = Blueprint(
@@ -96,14 +96,12 @@ def add_payout_number():
                        + ", ".join(sorted(PAYOUT_PROVIDERS))
         }), 400
 
-    # One format only (01XXXXXXXXX). Without this, the same number written
-    # as 01... and 8801... could be linked to two different accounts.
-    phone_number = normalize_bd_phone(data.get("phone_number"))
+    phone_number = normalize_phone(data.get("phone_number"))
 
     if not phone_number:
         return jsonify({
-            "message": "Enter a valid Bangladeshi mobile number "
-                       "(01XXXXXXXXX)"
+            "message": "Enter a valid phone number with country code "
+                       "(7 to 15 digits, for example +923001234567)"
         }), 400
 
     existing = PayoutNumber.query.filter(
@@ -157,6 +155,101 @@ def add_payout_number():
         return jsonify({
             "message": "Could not save payout number"
         }), 500
+
+
+@payout_number_bp.delete("/wallet/payout-numbers/<int:payout_number_id>")
+@jwt_required()
+def delete_payout_number(payout_number_id):
+    """
+    Removal rules (from the specification):
+      - only your own numbers
+      - a Pending number cannot be removed (an admin must decide first)
+      - a number with an unfinished withdrawal cannot be removed
+      - the default number cannot be removed while you have another
+        verified number for the same provider, unless you name it as the
+        replacement (`replacement_id`)
+    """
+    user = get_current_user()
+
+    if not user:
+        return jsonify({"message": "User not found"}), 404
+
+    data = request.get_json(silent=True) or {}
+
+    item = PayoutNumber.query.filter_by(
+        id=payout_number_id, user_id=user.id
+    ).with_for_update().first()
+
+    if not item:
+        return jsonify({"message": "Payout number not found"}), 404
+
+    if item.status == "pending":
+        return jsonify({
+            "message": "A pending number cannot be removed. "
+                       "Wait for the admin decision."
+        }), 409
+
+    open_withdrawal = Transaction.query.filter(
+        Transaction.user_id == user.id,
+        Transaction.transaction_type == "withdrawal",
+        Transaction.status.in_(("pending", "approved")),
+        Transaction.sender_or_recipient.in_(
+            phone_variants(item.phone_number)
+        ),
+    ).first()
+
+    if open_withdrawal:
+        return jsonify({
+            "message": "This number has an unfinished withdrawal "
+                       "and cannot be removed"
+        }), 409
+
+    replacement = None
+
+    if item.status == "verified" and item.is_default:
+        others = PayoutNumber.query.filter(
+            PayoutNumber.user_id == user.id,
+            PayoutNumber.payment_method == item.payment_method,
+            PayoutNumber.status == "verified",
+            PayoutNumber.id != item.id,
+        ).all()
+
+        if others:
+            replacement = next(
+                (o for o in others if o.id == data.get("replacement_id")),
+                None,
+            )
+
+            if not replacement:
+                return jsonify({
+                    "message": "Choose another verified number as the "
+                               "new default before removing this one"
+                }), 409
+
+    try:
+        if replacement:
+            replacement.is_default = True
+
+        add_audit_log(
+            actor_user_id=user.id,
+            action="payout_number_removed",
+            entity_type="payout_number",
+            entity_id=item.id,
+            details={
+                "payment_method": item.payment_method,
+                "phone_number": item.phone_number,
+                "status": item.status,
+                "new_default_id": replacement.id if replacement else None,
+            },
+            ip_address=request.remote_addr,
+        )
+        db.session.delete(item)
+        db.session.commit()
+        return jsonify({"message": "Payout number removed"}), 200
+    except Exception:
+        db.session.rollback()
+        current_app.logger.exception("payout number removal failed")
+        return jsonify({"message": "Could not remove payout number"}), 500
 
 
 @payout_number_bp.patch(
@@ -237,11 +330,23 @@ def admin_list_payout_numbers():
 
     items = query.order_by(PayoutNumber.created_at.desc()).all()
 
-    return jsonify({
-        "payout_numbers": [
-            serialize_payout_number(item) for item in items
-        ]
-    }), 200
+    owners = {
+        owner.id: owner
+        for owner in User.query.filter(
+            User.id.in_({item.user_id for item in items})
+        ).all()
+    } if items else {}
+
+    results = []
+
+    for item in items:
+        row = serialize_payout_number(item)
+        owner = owners.get(item.user_id)
+        row["owner_phone"] = owner.phone if owner else None
+        row["owner_name"] = owner.name if owner else None
+        results.append(row)
+
+    return jsonify({"payout_numbers": results}), 200
 
 
 @payout_number_bp.post(
@@ -256,11 +361,14 @@ def review_payout_number(payout_number_id):
 
     data = request.get_json(silent=True) or {}
     decision = str(data.get("status") or "").strip().lower()
+    reason = str(data.get("reason") or "").strip()
 
     if decision not in ("verified", "rejected"):
         return jsonify({
             "message": "Status must be verified or rejected"
         }), 400
+    if not reason or len(reason) < 3 or len(reason) > 500:
+        return jsonify({"message": "A review reason (3–500 characters) is required"}), 400
 
     item = db.session.get(PayoutNumber, payout_number_id)
 
@@ -310,6 +418,7 @@ def review_payout_number(payout_number_id):
                 "payment_method": item.payment_method,
                 "phone_number": item.phone_number,
                 "status": decision,
+                "reason": reason,
             },
             ip_address=request.remote_addr,
         )

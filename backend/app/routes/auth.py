@@ -1,3 +1,4 @@
+import re
 
 import secrets
 import string
@@ -14,7 +15,7 @@ from werkzeug.security import generate_password_hash, check_password_hash
 
 from app.extensions import db
 from app.models import User, Wallet
-from app.services.validators import normalize_bd_phone, phone_variants
+from app.services.validators import normalize_phone, phone_variants
 
 
 auth_bp = Blueprint("auth", __name__, url_prefix="/api/auth")
@@ -68,13 +69,14 @@ def register():
             "message": "Phone number and password are required"
         }), 400
 
-    # Saved in one format (01XXXXXXXXX) whatever the user typed.
-    phone = normalize_bd_phone(raw_phone)
+    # Store international numbers in a consistent format; legacy BD numbers
+    # remain in their existing local format for backward compatibility.
+    phone = normalize_phone(raw_phone)
 
     if not phone:
         return jsonify({
-            "message": "Enter a valid Bangladeshi mobile number "
-                       "(01XXXXXXXXX)"
+            "message": "Enter a valid phone number with country code "
+                       "(7 to 15 digits, for example +923001234567)"
         }), 400
 
     if not isinstance(password, str) or len(password) < 8:
@@ -92,8 +94,7 @@ def register():
             "message": "Name is required (2 to 120 characters)"
         }), 400
 
-    # Older accounts may have been saved as 8801XXXXXXXXX, so check
-    # every spelling of the same number.
+    # Check equivalent international/local spellings to prevent duplicates.
     if User.query.filter(User.phone.in_(phone_variants(phone))).first():
         return jsonify({
             "message": "Phone number already registered"
@@ -155,16 +156,15 @@ def register():
 
 
 def find_user_for_login(raw_phone):
-    normalized = normalize_bd_phone(raw_phone)
+    normalized = normalize_phone(raw_phone)
+    candidates = phone_variants(normalized) if normalized else []
 
-    candidates = []
-
-    if normalized:
-        candidates.extend(phone_variants(normalized))
-
-    # Accounts created before phone numbers were standardised.
-    if raw_phone not in candidates:
-        candidates.append(raw_phone)
+    # Preserve exact matching for accounts created before normalization.
+    raw = str(raw_phone or "").strip()
+    compact = re.sub(r"[\s().-]", "", raw)
+    for candidate in (raw, compact, re.sub(r"\D", "", raw)):
+        if candidate and candidate not in candidates:
+            candidates.append(candidate)
 
     for candidate in candidates:
         user = User.query.filter_by(phone=candidate).first()

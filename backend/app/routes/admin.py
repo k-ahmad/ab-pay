@@ -49,6 +49,7 @@ def get_withdrawals():
         "all",
         "pending",
         "approved",
+        "paid",
         "rejected"
     }
 
@@ -88,6 +89,7 @@ def get_withdrawals():
                 "recipient": transaction.sender_or_recipient,
                 "sender_or_recipient": transaction.sender_or_recipient,
                 "provider_reference": transaction.provider_reference,
+                "trx_id": transaction.provider_reference if transaction.status == "paid" else None,
                 "status": transaction.status,
                 "created_at": (
                     transaction.created_at.isoformat()
@@ -358,3 +360,92 @@ def review_withdrawal(public_id):
         return jsonify({
             "message": "Withdrawal review failed"
         }), 500
+
+
+@admin_bp.post("/withdrawals/<string:public_id>/mark-paid")
+@jwt_required()
+def mark_withdrawal_paid(public_id):
+    """Record a completed external payout against an approved withdrawal."""
+    admin = get_admin()
+    if not admin:
+        return jsonify({"message": "Admin access required"}), 403
+
+    data = request.get_json(silent=True) or {}
+    trx_id = str(data.get("trx_id") or "").strip()
+    if not 4 <= len(trx_id) <= 100:
+        return jsonify({"message": "Enter a valid payout Transaction ID (4 to 100 characters)"}), 400
+
+    try:
+        transaction = Transaction.query.filter_by(
+            public_id=public_id,
+            transaction_type="withdrawal"
+        ).with_for_update().first()
+
+        if not transaction:
+            return jsonify({"message": "Withdrawal not found"}), 404
+        if transaction.user_id == admin.id:
+            return jsonify({"message": "Admin cannot mark own withdrawal as paid"}), 403
+        if transaction.status != "approved":
+            return jsonify({
+                "message": "Only approved withdrawals can be marked as paid",
+                "status": transaction.status
+            }), 409
+        if transaction.provider_reference:
+            return jsonify({"message": "A payout Transaction ID is already recorded"}), 409
+
+        wallet = Wallet.query.filter_by(
+            user_id=transaction.user_id
+        ).with_for_update().first()
+        if not wallet:
+            return jsonify({"message": "Wallet not found"}), 404
+        if wallet.reserved_balance < transaction.amount:
+            return jsonify({"message": "Reserved balance is insufficient"}), 409
+
+        wallet.reserved_balance -= transaction.amount
+        transaction.provider_reference = trx_id
+        transaction.status = "paid"
+        transaction.reviewed_at = datetime.now(timezone.utc)
+        transaction.reviewed_by_id = admin.id
+        transaction.review_note = f"Payout completed. TrxID: {trx_id}"[:255]
+
+        add_ledger_entry(
+            wallet_id=wallet.id,
+            transaction_id=transaction.id,
+            amount=transaction.amount,
+            balance_after=wallet.available_balance,
+            entry_type="debit",
+            idempotency_key=f"withdrawal:{transaction.public_id}:paid",
+            note="Approved withdrawal payout confirmed; reserved funds settled"
+        )
+
+        add_audit_log(
+            actor_user_id=admin.id,
+            action="withdrawal_marked_paid",
+            entity_type="transaction",
+            entity_id=transaction.public_id,
+            details={
+                "user_id": transaction.user_id,
+                "amount": str(transaction.amount),
+                "trx_id": trx_id,
+                "status": "paid"
+            },
+            ip_address=request.remote_addr
+        )
+
+        db.session.commit()
+        return jsonify({
+            "message": "Withdrawal marked as paid successfully",
+            "transaction_id": transaction.public_id,
+            "trx_id": transaction.provider_reference,
+            "status": transaction.status,
+            "available_balance": str(wallet.available_balance),
+            "reserved_balance": str(wallet.reserved_balance)
+        }), 200
+
+    except IntegrityError:
+        db.session.rollback()
+        return jsonify({"message": "This payout Transaction ID is already in use"}), 409
+    except Exception:
+        db.session.rollback()
+        current_app.logger.exception("Could not mark withdrawal as paid")
+        return jsonify({"message": "Could not mark withdrawal as paid"}), 500

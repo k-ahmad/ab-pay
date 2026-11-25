@@ -4,6 +4,7 @@ import {
   depositAPI,
   withdrawalAPI,
   adminAPI,
+  payoutNumberAPI,
   newIdempotencyKey,
 } from "./api";
 import {
@@ -87,8 +88,21 @@ const PROVIDERS = [
 
 const MIN_DEPOSIT = 100;
 const MAX_DEPOSIT = 200000;
-const BD_PHONE = /^(?:\+?88)?01\d{9}$/;
-const cleanPhone = (value) => String(value || "").replace(/[\s-]/g, "");
+const cleanPhone = (value) => {
+  let phone = String(value || "")
+    .trim()
+    .replace(/[\s().-]/g, "");
+  if (phone.startsWith("00")) phone = `+${phone.slice(2)}`;
+  return phone;
+};
+const isValidPhone = (value) => {
+  const phone = cleanPhone(value);
+  const digits = phone.startsWith("+") ? phone.slice(1) : phone;
+  return (
+    /^\d{7,15}$/.test(digits) &&
+    (!phone.startsWith("+") || !digits.startsWith("0"))
+  );
+};
 
 const formatDate = (value) => {
   if (!value) return "";
@@ -146,6 +160,12 @@ function AuthPage({ onAuthSuccess }) {
   async function handleSubmit(e) {
     e.preventDefault();
     setError("");
+
+    if (!isValidPhone(phone)) {
+      return setError(
+        "Enter a valid phone number with country code (e.g. +923001234567).",
+      );
+    }
 
     if (mode === "register") {
       if (name.trim().length < 2) {
@@ -208,7 +228,7 @@ function AuthPage({ onAuthSuccess }) {
               type="tel"
               value={phone}
               onChange={(e) => setPhone(e.target.value)}
-              placeholder="01XXXXXXXXX"
+              placeholder="Country code + phone number (e.g. +923001234567)"
               required
               className="mt-2 w-full rounded-lg bg-[#07110e] border border-white/10 p-3 outline-none focus:border-lime-400"
             />
@@ -293,7 +313,9 @@ function AuthPage({ onAuthSuccess }) {
 }
 
 function App() {
-  const [page, setPage] = useState("Home");
+  const [page, setPage] = useState(
+    () => sessionStorage.getItem("abpay_page") || "Home",
+  );
   const [mobileMenu, setMobileMenu] = useState(false);
   const [showBalance, setShowBalance] = useState(true);
   const [records, setRecords] = useState([]);
@@ -327,8 +349,21 @@ function App() {
   const [authToken, setAuthToken] = useState(() =>
     localStorage.getItem("abpay_token"),
   );
-  const [currentUser, setCurrentUser] = useState(null);
-  const [wallet, setWallet] = useState(null);
+  // Render the last verified session immediately, then validate it in the background.
+  const [currentUser, setCurrentUser] = useState(() => {
+    try {
+      return JSON.parse(localStorage.getItem("abpay_user") || "null");
+    } catch (error) {
+      return null;
+    }
+  });
+  const [wallet, setWallet] = useState(() => {
+    try {
+      return JSON.parse(localStorage.getItem("abpay_wallet") || "null");
+    } catch (error) {
+      return null;
+    }
+  });
   const [authLoading, setAuthLoading] = useState(true);
 
   async function refreshWallet() {
@@ -336,6 +371,10 @@ function App() {
     const data = await authAPI.me(authToken);
     setCurrentUser(data.user);
     setWallet(data.wallet);
+    try {
+      localStorage.setItem("abpay_user", JSON.stringify(data.user));
+      localStorage.setItem("abpay_wallet", JSON.stringify(data.wallet ?? null));
+    } catch (error) {}
     return data;
   }
 
@@ -388,13 +427,19 @@ function App() {
   }
 
   useEffect(() => {
+    try {
+      sessionStorage.setItem("abpay_page", page);
+    } catch (error) {}
+  }, [page]);
+
+  useEffect(() => {
     if (currentUser && (page === "Home" || page === "Records")) {
       loadRecords();
     }
   }, [currentUser?.id, page]);
 
   useEffect(() => {
-    if (page === "Admin Panel" && currentUser?.role !== "admin") {
+    if (currentUser && page === "Admin Panel" && currentUser.role !== "admin") {
       setPage("Home");
     }
   }, [page, currentUser]);
@@ -403,6 +448,8 @@ function App() {
     if (!authToken) {
       setCurrentUser(null);
       setWallet(null);
+      localStorage.removeItem("abpay_user");
+      localStorage.removeItem("abpay_wallet");
       setAuthLoading(false);
       return;
     }
@@ -413,19 +460,36 @@ function App() {
       try {
         const data = await authAPI.me(authToken);
 
-        if (!cancelled) {
-          setCurrentUser(data.user);
-          setWallet(data.wallet);
-        }
+        if (cancelled) return;
+
+        setCurrentUser(data.user);
+        setWallet(data.wallet);
+
+        localStorage.setItem("abpay_user", JSON.stringify(data.user));
+        localStorage.setItem(
+          "abpay_wallet",
+          JSON.stringify(data.wallet ?? null),
+        );
       } catch (error) {
-        if (!cancelled) {
+        if (cancelled) return;
+
+        // Only clear the session if the server rejects the token.
+        if (error.status === 401 || error.status === 422) {
           localStorage.removeItem("abpay_token");
+          localStorage.removeItem("abpay_user");
+          localStorage.removeItem("abpay_wallet");
+
           setAuthToken(null);
           setCurrentUser(null);
           setWallet(null);
+        } else {
+          // Keep the saved session during network/server errors.
+          console.error("Session verification failed:", error);
         }
       } finally {
-        if (!cancelled) setAuthLoading(false);
+        if (!cancelled) {
+          setAuthLoading(false);
+        }
       }
     }
 
@@ -438,11 +502,20 @@ function App() {
 
   function handleAuthSuccess(data) {
     localStorage.setItem("abpay_token", data.access_token);
+    if (data.user) {
+      setCurrentUser(data.user);
+      try {
+        localStorage.setItem("abpay_user", JSON.stringify(data.user));
+      } catch (error) {}
+    }
     setAuthToken(data.access_token);
   }
 
   function handleLogout() {
     localStorage.removeItem("abpay_token");
+    localStorage.removeItem("abpay_user");
+    localStorage.removeItem("abpay_wallet");
+    sessionStorage.removeItem("abpay_page");
     setAuthToken(null);
     setCurrentUser(null);
     setWallet(null);
@@ -450,7 +523,7 @@ function App() {
     setPage("Home");
   }
 
-  if (authLoading || !currentUser) {
+  if (!currentUser) {
     return <AuthPage onAuthSuccess={handleAuthSuccess} />;
   }
 
@@ -620,6 +693,7 @@ function App() {
               onSubmit={submitWithdrawal}
               navigate={navigate}
               walletBalance={wallet?.available_balance || "0.00"}
+              token={authToken}
             />
           )}
           {page === "Team" && <TeamPage />}
@@ -641,7 +715,11 @@ function App() {
           )}
 
           {page === "My Profile" && (
-            <ProfilePage navigate={navigate} setNotice={setNotice} />
+            <ProfilePage
+              navigate={navigate}
+              setNotice={setNotice}
+              token={authToken}
+            />
           )}
         </div>
 
@@ -1007,8 +1085,10 @@ function RechargePage({ onSubmit, navigate }) {
 
     if (!senderNumber || !trxId)
       return setError("Enter your sender account number and transaction ID.");
-    if (!BD_PHONE.test(senderNumber))
-      return setError("Enter a valid Bangladeshi mobile number (01XXXXXXXXX).");
+    if (!isValidPhone(senderNumber))
+      return setError(
+        "Enter a valid phone number with country code (e.g. +923001234567).",
+      );
     if (trxId.length < 4 || trxId.length > 100)
       return setError("Please check your transaction ID / reference.");
 
@@ -1118,7 +1198,7 @@ function RechargePage({ onSubmit, navigate }) {
     <>
       <PageHeading
         title="Recharge Wallet"
-        subtitle="Submit a wallet top-up request using a supported Bangladesh payment method."
+        subtitle="Submit a wallet top-up request using a supported payment method."
         icon={ArrowDownLeft}
       />
       <div className="mx-auto max-w-5xl">
@@ -1317,7 +1397,7 @@ function RechargePage({ onSubmit, navigate }) {
                 <Field
                   label="Your Sender Account Number"
                   type="tel"
-                  placeholder="e.g. 01XXXXXXXXX"
+                  placeholder="e.g. +923001234567"
                   value={sender}
                   onChange={(e) => setSender(e.target.value)}
                 />
@@ -1350,12 +1430,13 @@ function RechargePage({ onSubmit, navigate }) {
   );
 }
 
-function WithdrawPage({ onSubmit, navigate, walletBalance }) {
+function WithdrawPage({ onSubmit, navigate, walletBalance, token }) {
   const [step, setStep] = useState(1);
   const [method, setMethod] = useState("");
   const [amount, setAmount] = useState("");
   const [account, setAccount] = useState("");
-  const [accountName, setAccountName] = useState("");
+  const [savedPayoutNumbers, setSavedPayoutNumbers] = useState([]);
+  const [payoutLoading, setPayoutLoading] = useState(false);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [submitted, setSubmitted] = useState(null);
@@ -1367,18 +1448,47 @@ function WithdrawPage({ onSubmit, navigate, walletBalance }) {
     { name: "UPay", mark: "U", color: "bg-lime-500" },
   ];
 
+  useEffect(() => {
+    let active = true;
+    setPayoutLoading(true);
+    payoutNumberAPI
+      .list(token)
+      .then((result) => {
+        if (active)
+          setSavedPayoutNumbers(
+            (result.payout_numbers || []).filter(
+              (item) => item.status === "verified",
+            ),
+          );
+      })
+      .catch((err) => {
+        if (active)
+          setError(err.message || "Could not load verified payout numbers.");
+      })
+      .finally(() => {
+        if (active) setPayoutLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [token]);
+
+  const methodNumbers = savedPayoutNumbers.filter(
+    (item) => item.payment_method === method.toLowerCase(),
+  );
+
   const continueToReview = () => {
     if (!method) return setError("Please select a withdrawal method.");
-    if (!amount || !Number.isFinite(Number(amount)) || Number(amount) <= 0)
-      return setError("Enter a valid withdrawal amount.");
+    if (!amount || !Number.isFinite(Number(amount)) || Number(amount) < 100)
+      return setError("Minimum withdrawal amount is ৳100.");
     if (!/^\d+(\.\d{1,2})?$/.test(amount))
       return setError("Amount can have up to 2 decimal places.");
     if (Number(amount) > Number(walletBalance || 0))
       return setError("Insufficient wallet balance.");
-    if (!/^[0-9+\s-]{8,20}$/.test(account.trim()))
-      return setError("Enter a valid recipient account number.");
-    if (!accountName.trim())
-      return setError("Enter the recipient account holder name.");
+    if (!methodNumbers.some((item) => item.phone_number === account))
+      return setError(
+        "Select one of your verified payout numbers in My Profile → Wallet Accounts.",
+      );
     setError("");
     setStep(2);
   };
@@ -1398,7 +1508,6 @@ function WithdrawPage({ onSubmit, navigate, walletBalance }) {
         amount: request.amount,
         method,
         account: account.trim(),
-        accountName: accountName.trim(),
         status: "Pending",
       });
     } catch (err) {
@@ -1476,7 +1585,6 @@ function WithdrawPage({ onSubmit, navigate, walletBalance }) {
                     setMethod("");
                     setAmount("");
                     setAccount("");
-                    setAccountName("");
                   }}
                   className="w-full rounded-xl border border-white/10 px-5 py-3.5 text-sm font-semibold text-slate-300 transition hover:bg-white/[0.05]"
                 >
@@ -1585,7 +1693,7 @@ function WithdrawPage({ onSubmit, navigate, walletBalance }) {
                 <Field
                   label="Withdrawal Amount (BDT)"
                   type="number"
-                  min="0.01"
+                  min="100"
                   step="0.01"
                   placeholder="Enter amount"
                   value={amount}
@@ -1610,26 +1718,45 @@ function WithdrawPage({ onSubmit, navigate, walletBalance }) {
                   </button>
                 ))}
               </div>
-              <div className="mt-5 space-y-4">
-                <Field
-                  label="Recipient Account Number"
-                  type="tel"
-                  placeholder="e.g. 01XXXXXXXXX"
-                  value={account}
-                  onChange={(e) => {
-                    setAccount(e.target.value);
-                    setError("");
-                  }}
-                />
-                <Field
-                  label="Account Holder Name"
-                  placeholder="Name registered with the wallet"
-                  value={accountName}
-                  onChange={(e) => {
-                    setAccountName(e.target.value);
-                    setError("");
-                  }}
-                />
+              <div className="mt-5 space-y-2">
+                <label className="block">
+                  <span className="mb-2 block text-xs font-medium text-slate-300">
+                    Verified recipient account
+                  </span>
+                  <select
+                    value={account}
+                    onChange={(e) => {
+                      setAccount(e.target.value);
+                      setError("");
+                    }}
+                    disabled={
+                      !method || payoutLoading || methodNumbers.length === 0
+                    }
+                    className="w-full rounded-xl border border-white/10 bg-[#0d2a20] px-4 py-3 text-sm text-white outline-none focus:border-lime-300/50 disabled:opacity-50"
+                  >
+                    <option value="">
+                      {payoutLoading
+                        ? "Loading verified numbers..."
+                        : !method
+                          ? "Select a provider first"
+                          : methodNumbers.length
+                            ? "Select a verified number"
+                            : "No verified number for this provider"}
+                    </option>
+                    {methodNumbers.map((item) => (
+                      <option key={item.id} value={item.phone_number}>
+                        {item.phone_number}
+                        {item.is_default ? " · Default" : ""}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                {!payoutLoading && method && methodNumbers.length === 0 && (
+                  <p className="text-[11px] leading-5 text-amber-200">
+                    Add this provider's number in My Profile → Wallet Accounts
+                    and wait for admin verification before withdrawing.
+                  </p>
+                )}
               </div>
               {error && (
                 <p role="alert" className="mt-3 text-xs text-rose-300">
@@ -1662,7 +1789,6 @@ function WithdrawPage({ onSubmit, navigate, walletBalance }) {
                   ["Amount", `৳ ${money(Number(amount))}`],
                   ["Payout method", method],
                   ["Recipient account", account],
-                  ["Account holder", accountName],
                   ["Status after submission", "Pending review"],
                 ].map(([label, value]) => (
                   <div
@@ -2160,7 +2286,7 @@ function RecordsPage({ records, loading, error, onRefresh }) {
               <span className="self-center pr-1 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
                 Status
               </span>
-              {["All", "Pending", "Approved", "Rejected"].map((item) => (
+              {["All", "Pending", "Approved", "Paid", "Rejected"].map((item) => (
                 <button
                   key={item}
                   type="button"
@@ -2403,9 +2529,83 @@ function ReasonDialog({
   );
 }
 
+function MarkPaidDialog({ item, busy, error, onCancel, onConfirm }) {
+  const [trxId, setTrxId] = useState("");
+  const [paymentVerified, setPaymentVerified] = useState(false);
+  const [localError, setLocalError] = useState("");
+
+  function submit(event) {
+    event.preventDefault();
+    const cleanTrxId = trxId.trim();
+    if (cleanTrxId.length < 4 || cleanTrxId.length > 100) {
+      setLocalError("Enter a valid TrxID (4–100 characters).");
+      return;
+    }
+    if (!paymentVerified) {
+      setLocalError("Confirm that the payout has already been completed and verified.");
+      return;
+    }
+    setLocalError("");
+    onConfirm(cleanTrxId);
+  }
+
+  return (
+    <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/75 p-4">
+      <form
+        onSubmit={submit}
+        className="w-full max-w-md rounded-2xl border border-white/10 bg-[#0d2a20] p-6 shadow-2xl"
+      >
+        <h2 className="text-lg font-bold text-white">Confirm withdrawal payment</h2>
+        <p className="mt-1 break-all text-[11px] text-slate-500">
+          {item.id} · ৳ {money(item.amount)}
+        </p>
+        <p className="mt-3 text-xs leading-5 text-slate-400">
+          Enter the transaction ID from the payment provider. This records a payout that has already been completed; it does not send money.
+        </p>
+        <label className="mt-4 block">
+          <span className="mb-2 block text-xs font-medium text-slate-300">Payout TrxID</span>
+          <input
+            value={trxId}
+            onChange={(event) => { setTrxId(event.target.value); setLocalError(""); }}
+            maxLength={100}
+            autoFocus
+            placeholder="Enter payment transaction ID"
+            className="w-full rounded-xl border border-white/10 bg-[#081f18] px-4 py-3 text-sm text-white outline-none placeholder:text-slate-600 focus:border-lime-300/50"
+          />
+        </label>
+        <label className="mt-4 flex cursor-pointer items-start gap-3 text-xs leading-5 text-slate-300">
+          <input
+            type="checkbox"
+            checked={paymentVerified}
+            onChange={(event) => { setPaymentVerified(event.target.checked); setLocalError(""); }}
+            className="mt-1 h-4 w-4 accent-lime-300"
+          />
+          <span>I confirm that the money has already been sent and the payment is verified.</span>
+        </label>
+        {(localError || error) && (
+          <p role="alert" className="mt-3 text-xs text-rose-300">{localError || error}</p>
+        )}
+        <div className="mt-5 flex gap-3">
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={busy}
+            className="w-full rounded-xl border border-white/10 px-4 py-3 text-sm font-semibold text-slate-300 hover:bg-white/[0.05] disabled:opacity-50"
+          >Cancel</button>
+          <button
+            type="submit"
+            disabled={busy}
+            className="w-full rounded-xl bg-lime-300 px-4 py-3 text-sm font-bold text-[#09251a] disabled:opacity-50"
+          >{busy ? "Please wait..." : "Confirm Paid"}</button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
 function AdminPage({ token, onNotice, onWalletRefresh }) {
   const [kind, setKind] = useState("deposits");
-  const [filter, setFilter] = useState("pending");
+  const [filter, setFilter] = useState("all");
   const [search, setSearch] = useState("");
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -2434,7 +2634,7 @@ function AdminPage({ token, onNotice, onWalletRefresh }) {
     amount: Number(row.amount || 0),
     method: row.payment_method || "Unknown",
     account: row.sender_or_recipient || row.recipient || "",
-    reference: "",
+    reference: row.trx_id || row.provider_reference || "",
     phone: row.phone || "",
     user_id: row.user_id,
     status: String(row.status || "pending").toLowerCase(),
@@ -2448,16 +2648,36 @@ function AdminPage({ token, onNotice, onWalletRefresh }) {
     setLoading(true);
     setError("");
     try {
-      const data =
-        selectedKind === "deposits"
-          ? await adminAPI.listDeposits(token, selectedFilter)
-          : await adminAPI.listWithdrawals(token, selectedFilter);
+      let data;
+      if (selectedKind === "deposits") {
+        data = await adminAPI.listDeposits(token, selectedFilter);
+      } else if (selectedKind === "withdrawals") {
+        data = await adminAPI.listWithdrawals(token, selectedFilter);
+      } else {
+        const payoutFilter =
+          selectedFilter === "approved" ? "verified" : selectedFilter;
+        data = await adminAPI.listPayoutNumbers(token, payoutFilter);
+      }
       if (requestId !== requestCounter.current) return;
-      setItems(
+      const rows =
         selectedKind === "deposits"
           ? (data.deposits || []).map(mapDeposit)
-          : (data.withdrawals || []).map(mapWithdrawal),
-      );
+          : selectedKind === "withdrawals"
+            ? (data.withdrawals || []).map(mapWithdrawal)
+            : (data.payout_numbers || []).map((row) => ({
+                id: String(row.id),
+                amount: 0,
+                method: row.payment_method,
+                account: row.phone_number,
+                reference: "",
+                phone: `User #${row.user_id}`,
+                user_id: row.user_id,
+                status: row.status === "verified" ? "approved" : row.status,
+                date: formatDate(row.created_at),
+                reviewedAt: formatDate(row.verified_at),
+                reviewNote: "",
+              }));
+      setItems(rows);
     } catch (err) {
       if (requestId === requestCounter.current) {
         setError(err.message || "Could not load requests.");
@@ -2480,7 +2700,14 @@ function AdminPage({ token, onNotice, onWalletRefresh }) {
       const result =
         kind === "deposits"
           ? await adminAPI.reviewDeposit(token, item.id, action, reason)
-          : await adminAPI.reviewWithdrawal(token, item.id, action, reason);
+          : kind === "withdrawals"
+            ? await adminAPI.reviewWithdrawal(token, item.id, action, reason)
+            : await adminAPI.reviewPayoutNumber(
+                token,
+                item.id,
+                action === "approve" ? "verified" : "rejected",
+                reason,
+              );
       setDialog(null);
       onNotice?.(result.message || `Request ${action}d successfully.`);
       await loadRequests(kind, filter);
@@ -2491,6 +2718,23 @@ function AdminPage({ token, onNotice, onWalletRefresh }) {
       }
     } catch (err) {
       setDialogError(err.message || "Unable to review this request.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function confirmMarkPaid(trxId) {
+    const item = dialog.item;
+    setBusy(true);
+    setDialogError("");
+    try {
+      const result = await adminAPI.markWithdrawalPaid(token, item.id, trxId);
+      setDialog(null);
+      onNotice?.(result.message || "Withdrawal marked as paid.");
+      await loadRequests("withdrawals", filter);
+      try { await onWalletRefresh?.(); } catch (refreshError) {}
+    } catch (err) {
+      setDialogError(err.message || "Unable to mark this withdrawal as paid.");
     } finally {
       setBusy(false);
     }
@@ -2513,14 +2757,19 @@ function AdminPage({ token, onNotice, onWalletRefresh }) {
   const approved = items.filter((item) => item.status === "approved").length;
   const rejected = items.filter((item) => item.status === "rejected").length;
   const isDeposits = kind === "deposits";
-  const noun = isDeposits ? "Deposit" : "Withdrawal";
+  const isPayoutNumbers = kind === "payout-numbers";
+  const noun = isDeposits
+    ? "Deposit"
+    : isPayoutNumbers
+      ? "Payout Number"
+      : "Withdrawal";
 
   return (
     <>
       <PageHeading
         eyebrow="ADMINISTRATION · SECURE API"
         title="Admin Panel"
-        subtitle="Deposit and withdrawal requests loaded from the Flask backend."
+        subtitle="Review deposits, withdrawals and saved payout numbers from the Flask backend."
         icon={ShieldCheck}
       />
       <div className="mb-5 flex items-start gap-3 rounded-2xl border border-sky-300/20 bg-sky-300/[0.06] p-4 text-xs leading-5 text-sky-100">
@@ -2528,8 +2777,8 @@ function AdminPage({ token, onNotice, onWalletRefresh }) {
         <p>
           Admin actions are checked by Flask using your account role, and every
           decision needs a written reason. Approving a deposit credits the
-          user's wallet. Approving a withdrawal does not send a real bKash/Nagad
-          payment.
+          user's wallet. Withdrawal approval does not send a real mobile-wallet
+          payment. Payout-number verification does not connect to a provider.
         </p>
       </div>
 
@@ -2537,6 +2786,7 @@ function AdminPage({ token, onNotice, onWalletRefresh }) {
         {[
           { label: "Deposits", value: "deposits" },
           { label: "Withdrawals", value: "withdrawals" },
+          { label: "Payout Numbers", value: "payout-numbers" },
         ].map((tab) => (
           <button
             key={tab.value}
@@ -2560,7 +2810,9 @@ function AdminPage({ token, onNotice, onWalletRefresh }) {
           </p>
         </div>
         <div className="rounded-2xl border border-lime-300/15 bg-lime-300/[0.05] p-4">
-          <p className="text-xs text-slate-500">Approved</p>
+          <p className="text-xs text-slate-500">
+            {isPayoutNumbers ? "Verified" : "Approved"}
+          </p>
           <p className="mt-2 text-2xl font-extrabold text-lime-200">
             {approved}
           </p>
@@ -2601,7 +2853,11 @@ function AdminPage({ token, onNotice, onWalletRefresh }) {
         <div className="mb-4 flex flex-wrap gap-2">
           {[
             { label: "Pending", value: "pending" },
-            { label: "Approved", value: "approved" },
+            {
+              label: isPayoutNumbers ? "Verified" : "Approved",
+              value: "approved",
+            },
+            ...(kind === "withdrawals" ? [{ label: "Paid", value: "paid" }] : []),
             { label: "Rejected", value: "rejected" },
             { label: "All", value: "all" },
           ].map((option) => (
@@ -2658,6 +2914,11 @@ function AdminPage({ token, onNotice, onWalletRefresh }) {
                       Transaction ID: {item.reference || "—"}
                     </p>
                   )}
+                  {!isDeposits && item.status === "paid" && item.reference && (
+                    <p className="mt-1 break-all text-[10px] text-lime-200">
+                      Payout TrxID: {item.reference}
+                    </p>
+                  )}
                   {item.reviewNote && (
                     <p className="mt-1 break-words text-[10px] text-slate-500">
                       Review note: {item.reviewNote}
@@ -2665,10 +2926,20 @@ function AdminPage({ token, onNotice, onWalletRefresh }) {
                   )}
                 </div>
                 <div className="flex items-center justify-between gap-4 lg:min-w-[210px] lg:flex-col lg:items-end">
-                  <p className="text-base font-extrabold text-white">
-                    ৳ {money(item.amount)}
-                  </p>
-                  {item.status === "pending" ? (
+                  {!isPayoutNumbers && (
+                    <p className="text-base font-extrabold text-white">
+                      ৳ {money(item.amount)}
+                    </p>
+                  )}
+                  {kind === "withdrawals" && item.status === "approved" ? (
+                    <button
+                      type="button"
+                      onClick={() => { setDialogError(""); setDialog({ item, action: "paid" }); }}
+                      className="rounded-lg border border-lime-300/20 bg-lime-300/10 px-3 py-2 text-[10px] font-bold text-lime-200 hover:bg-lime-300/20"
+                    >
+                      Mark as Paid
+                    </button>
+                  ) : item.status === "pending" ? (
                     <div className="flex gap-2">
                       <button
                         type="button"
@@ -2693,7 +2964,7 @@ function AdminPage({ token, onNotice, onWalletRefresh }) {
                     </div>
                   ) : (
                     <span className="text-[10px] text-slate-500">
-                      Reviewed: {item.reviewedAt}
+                      {item.status === "paid" ? "Payment completed" : `Reviewed: ${item.reviewedAt}`}
                     </span>
                   )}
                 </div>
@@ -2709,7 +2980,17 @@ function AdminPage({ token, onNotice, onWalletRefresh }) {
         )}
       </Panel>
 
-      {dialog && (
+      {dialog && dialog.action === "paid" && (
+        <MarkPaidDialog
+          key={`${dialog.item.id}-paid`}
+          item={dialog.item}
+          busy={busy}
+          error={dialogError}
+          onCancel={() => setDialog(null)}
+          onConfirm={confirmMarkPaid}
+        />
+      )}
+      {dialog && dialog.action !== "paid" && (
         <ReasonDialog
           key={`${dialog.item.id}-${dialog.action}`}
           item={dialog.item}
@@ -2725,12 +3006,12 @@ function AdminPage({ token, onNotice, onWalletRefresh }) {
   );
 }
 
-function ProfilePage({ navigate, setNotice }) {
+function ProfilePage({ navigate, setNotice, token }) {
   const [section, setSection] = useState("Overview");
   const [walletAccounts, setWalletAccounts] = useState([]);
+  const [accountsLoading, setAccountsLoading] = useState(false);
   const [provider, setProvider] = useState("bKash");
   const [accountNumber, setAccountNumber] = useState("");
-  const [accountLabel, setAccountLabel] = useState("");
   const [accountError, setAccountError] = useState("");
   const [showAccountForm, setShowAccountForm] = useState(false);
   const [language, setLanguage] = useState("English");
@@ -2771,35 +3052,85 @@ function ProfilePage({ navigate, setNotice }) {
     },
   ];
 
-  const addWalletAccount = (event) => {
+  const loadWalletAccounts = async () => {
+    setAccountsLoading(true);
+    setAccountError("");
+    try {
+      const result = await payoutNumberAPI.list(token);
+      setWalletAccounts(
+        (result.payout_numbers || []).map((item) => ({
+          id: item.id,
+          provider:
+            { bkash: "bKash", nagad: "Nagad", rocket: "Rocket", upay: "UPay" }[
+              item.payment_method
+            ] || item.payment_method,
+          number: item.phone_number,
+          label: "Mobile wallet",
+          status: item.status,
+          isDefault: item.is_default,
+        })),
+      );
+    } catch (error) {
+      setAccountError(error.message || "Could not load saved payout numbers.");
+    } finally {
+      setAccountsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (section === "Wallet Accounts" && token) loadWalletAccounts();
+  }, [section, token]);
+
+  const addWalletAccount = async (event) => {
     event.preventDefault();
     if (!accountNumber.trim()) {
       setAccountError("Please enter your account number.");
       return;
     }
-    if (!/^[0-9+\-\s]{8,20}$/.test(accountNumber.trim())) {
-      setAccountError("Enter a valid mobile wallet number.");
+    if (!isValidPhone(accountNumber)) {
+      setAccountError(
+        "Enter a valid phone number with country code (e.g. +923001234567).",
+      );
       return;
     }
-    setWalletAccounts((current) => [
-      ...current,
-      {
-        id: `WAL-${Date.now()}`,
-        provider,
-        number: accountNumber.trim(),
-        label: accountLabel.trim() || "Personal account",
-      },
-    ]);
-    setAccountNumber("");
-    setAccountLabel("");
+    setAccountsLoading(true);
     setAccountError("");
-    setShowAccountForm(false);
-    setNotice?.("Wallet account added to this demo session only.");
+    try {
+      const result = await payoutNumberAPI.create(token, {
+        payment_method: provider.toLowerCase(),
+        phone_number: cleanPhone(accountNumber),
+      });
+      setAccountNumber("");
+      setShowAccountForm(false);
+      setNotice?.(
+        result.message || "Payout number submitted for verification.",
+      );
+      await loadWalletAccounts();
+    } catch (error) {
+      setAccountError(error.message || "Could not save payout number.");
+    } finally {
+      setAccountsLoading(false);
+    }
   };
 
-  const removeWalletAccount = (id) => {
-    setWalletAccounts((current) => current.filter((item) => item.id !== id));
-    setNotice?.("Wallet account removed from this demo session.");
+  const removeWalletAccount = async (id) => {
+    try {
+      const result = await payoutNumberAPI.remove(token, id);
+      setNotice?.(result.message || "Payout number removed.");
+      await loadWalletAccounts();
+    } catch (error) {
+      setAccountError(error.message || "Could not remove payout number.");
+    }
+  };
+
+  const setDefaultWalletAccount = async (id) => {
+    try {
+      const result = await payoutNumberAPI.setDefault(token, id);
+      setNotice?.(result.message || "Default payout number updated.");
+      await loadWalletAccounts();
+    } catch (error) {
+      setAccountError(error.message || "Could not update default number.");
+    }
   };
 
   const copySupportEmail = async () => {
@@ -2933,14 +3264,15 @@ function ProfilePage({ navigate, setNotice }) {
           <>
             <SectionHeader
               title="Wallet Accounts"
-              subtitle="Manage the mobile wallet accounts linked to this demo profile."
+              subtitle="Manage payout numbers saved securely to your AB PAY account."
             />
             <Panel>
               <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
                 <div>
                   <h3 className="font-bold">Your Payment Accounts</h3>
                   <p className="mt-1 text-xs text-slate-500">
-                    Saved accounts are only kept in the current browser session.
+                    Numbers are saved on the server. New numbers remain pending
+                    until admin verification.
                   </p>
                 </div>
                 <button
@@ -2981,21 +3313,11 @@ function ProfilePage({ navigate, setNotice }) {
                       value={accountNumber}
                       onChange={(event) => setAccountNumber(event.target.value)}
                       type="tel"
-                      placeholder="Enter mobile wallet number"
+                      placeholder="e.g. +923001234567"
                       className="w-full rounded-xl border border-white/10 bg-[#0d2a20] px-4 py-3 text-sm text-white outline-none placeholder:text-slate-600 focus:border-lime-300/50"
                     />
                   </label>
-                  <label className="block">
-                    <span className="mb-2 block text-xs font-medium text-slate-300">
-                      Account label (optional)
-                    </span>
-                    <input
-                      value={accountLabel}
-                      onChange={(event) => setAccountLabel(event.target.value)}
-                      placeholder="e.g. Personal bKash"
-                      className="w-full rounded-xl border border-white/10 bg-[#0d2a20] px-4 py-3 text-sm text-white outline-none placeholder:text-slate-600 focus:border-lime-300/50"
-                    />
-                  </label>
+
                   {accountError && (
                     <p className="text-xs text-rose-300">{accountError}</p>
                   )}
@@ -3018,14 +3340,17 @@ function ProfilePage({ navigate, setNotice }) {
                     </button>
                   </div>
                   <p className="text-[10px] leading-5 text-amber-200/80">
-                    Demo only: this does not verify ownership or connect to
-                    bKash, Nagad, Rocket or UPay. Never enter a wallet PIN or
-                    password here.
+                    Your number will be reviewed by an AB PAY admin. Never enter
+                    a wallet PIN or password here.
                   </p>
                 </form>
               )}
 
-              {walletAccounts.length ? (
+              {accountsLoading ? (
+                <div className="py-8 text-center text-sm text-slate-400">
+                  Loading saved payout numbers...
+                </div>
+              ) : walletAccounts.length ? (
                 <div className="space-y-3">
                   {walletAccounts.map((account) => (
                     <div
@@ -3042,13 +3367,36 @@ function ProfilePage({ navigate, setNotice }) {
                         <p className="mt-1 text-xs text-slate-400">
                           {account.label} · {account.number}
                         </p>
+                        <p
+                          className={`mt-1 text-[10px] font-semibold uppercase ${account.status === "verified" ? "text-lime-300" : account.status === "rejected" ? "text-rose-300" : "text-amber-200"}`}
+                        >
+                          {account.status}
+                          {account.isDefault ? " · Default" : ""}
+                        </p>
                       </div>
-                      <button
-                        onClick={() => removeWalletAccount(account.id)}
-                        className="rounded-lg border border-rose-300/15 px-3 py-2 text-[10px] font-semibold text-rose-300 hover:bg-rose-300/10"
-                      >
-                        Remove
-                      </button>
+                      {account.status === "pending" && (
+                        <span className="text-[10px] text-slate-500">
+                          Awaiting admin review
+                        </span>
+                      )}
+                      {account.status === "verified" && !account.isDefault && (
+                        <button
+                          onClick={() => setDefaultWalletAccount(account.id)}
+                          className="rounded-lg border border-lime-300/20 px-3 py-2 text-[10px] font-semibold text-lime-200 hover:bg-lime-300/10"
+                        >
+                          Make default
+                        </button>
+                      )}
+                      {(account.status === "rejected" ||
+                        (account.status === "verified" &&
+                          !account.isDefault)) && (
+                        <button
+                          onClick={() => removeWalletAccount(account.id)}
+                          className="rounded-lg border border-rose-300/15 px-3 py-2 text-[10px] font-semibold text-rose-300 hover:bg-rose-300/10"
+                        >
+                          Remove
+                        </button>
+                      )}
                     </div>
                   ))}
                 </div>
@@ -3056,7 +3404,7 @@ function ProfilePage({ navigate, setNotice }) {
                 <EmptyState
                   icon={CreditCard}
                   title="No wallet accounts linked"
-                  description="Add a payment account to see it listed here. Account details remain local to this demo session."
+                  description="Add a payout number. It will appear here as pending until an admin verifies it."
                 />
               )}
             </Panel>

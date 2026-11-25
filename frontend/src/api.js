@@ -97,8 +97,30 @@ export const withdrawalAPI = {
     apiRequest(`/api/wallet/withdrawals?limit=${limit}`, { token }),
 };
 
+// User payout-number APIs
+export const payoutNumberAPI = {
+  list: (token) => apiRequest("/api/wallet/payout-numbers", { token }),
+  create: (token, payload) => apiRequest("/api/wallet/payout-numbers", {
+    method: "POST", token, body: payload,
+  }),
+  remove: (token, id) => apiRequest(`/api/wallet/payout-numbers/${id}`, {
+    method: "DELETE", token,
+  }),
+  setDefault: (token, id) => apiRequest(`/api/wallet/payout-numbers/${id}/default`, {
+    method: "PATCH", token,
+  }),
+};
+
 // Admin APIs
 export const adminAPI = {
+  listPayoutNumbers: (token, status = "pending") =>
+    apiRequest(`/api/admin/payout-numbers?status=${encodeURIComponent(status)}`, { token }),
+
+  reviewPayoutNumber: (token, id, status, reason) =>
+    apiRequest(`/api/admin/payout-numbers/${id}/review`, {
+      method: "POST", token, body: { status, reason },
+    }),
+
   listWithdrawals: (token, status = "all") =>
     apiRequest(
       `/api/admin/withdrawals?status=${encodeURIComponent(status)}`,
@@ -112,6 +134,16 @@ export const adminAPI = {
         method: "POST",
         token,
         body: { action, reason },
+      }
+    ),
+
+  markWithdrawalPaid: (token, publicId, trxId) =>
+    apiRequest(
+      `/api/admin/withdrawals/${encodeURIComponent(publicId)}/mark-paid`,
+      {
+        method: "POST",
+        token,
+        body: { trx_id: trxId },
       }
     ),
 
