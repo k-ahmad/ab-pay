@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+// import { Sparkles } from "lucide-react";
 import {
   authAPI,
   depositAPI,
@@ -172,7 +173,7 @@ function AuthField({
         )}
         <input
           {...inputProps}
-          className="min-w-0 flex-1 bg-transparent py-3.5 text-sm text-white outline-none placeholder:text-slate-600"
+          className="min-w-0 flex-1 bg-transparent py-3.5 text-sm text-white outline-none placeholder:text-slate-600 [color-scheme:dark] [&:-webkit-autofill]:[-webkit-text-fill-color:white] [&:-webkit-autofill]:[box-shadow:0_0_0px_1000px_#081c15_inset] [&:-webkit-autofill]:[caret-color:white] [&:-webkit-autofill:focus]:[box-shadow:0_0_0px_1000px_#0a2219_inset]"
         />
         {trailing}
       </span>
@@ -342,7 +343,9 @@ function AuthPage({ onAuthSuccess }) {
               type={showPassword ? "text" : "password"}
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              placeholder={isRegister ? "At least 8 characters" : "Your password"}
+              placeholder={
+                isRegister ? "At least 8 characters" : "Your password"
+              }
               autoComplete={isRegister ? "new-password" : "current-password"}
               minLength={8}
               required
@@ -410,9 +413,7 @@ function AuthPage({ onAuthSuccess }) {
           </form>
 
           <p className="mt-5 text-center text-xs text-slate-500">
-            {isRegister
-              ? "Already have an account?"
-              : "New to AB PAY?"}
+            {isRegister ? "Already have an account?" : "New to AB PAY?"}
             <button
               type="button"
               onClick={() => switchMode(isRegister ? "login" : "register")}
@@ -919,8 +920,11 @@ function Dashboard({
           <p className="mb-2 flex items-center gap-2 text-[10px] font-bold tracking-[0.22em] text-lime-300">
             <Sparkles size={13} /> YOUR FINANCIAL SPACE
           </p>
-          <h1 className="text-3xl font-bold tracking-tight sm:text-[36px]">
-            Welcome back! <span>👋</span>
+          <h1 className="flex items-center gap-3 text-3xl font-bold tracking-tight sm:text-[36px]">
+            Welcome back!
+            <span className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-lime-300/20 bg-lime-300/10">
+              <Sparkles className="h-6 w-6 text-lime-300" />
+            </span>
           </h1>
           <p className="mt-2 text-sm text-slate-400">
             Here's what's happening with your account today.
@@ -2405,16 +2409,18 @@ function RecordsPage({ records, loading, error, onRefresh }) {
               <span className="self-center pr-1 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
                 Status
               </span>
-              {["All", "Pending", "Approved", "Paid", "Rejected"].map((item) => (
-                <button
-                  key={item}
-                  type="button"
-                  onClick={() => setStatusFilter(item)}
-                  className={`rounded-lg px-3 py-2 text-[10px] font-semibold transition ${statusFilter === item ? "bg-white text-[#09251a]" : "bg-white/[0.05] text-slate-400 hover:text-white"}`}
-                >
-                  {item}
-                </button>
-              ))}
+              {["All", "Pending", "Approved", "Paid", "Rejected"].map(
+                (item) => (
+                  <button
+                    key={item}
+                    type="button"
+                    onClick={() => setStatusFilter(item)}
+                    className={`rounded-lg px-3 py-2 text-[10px] font-semibold transition ${statusFilter === item ? "bg-white text-[#09251a]" : "bg-white/[0.05] text-slate-400 hover:text-white"}`}
+                  >
+                    {item}
+                  </button>
+                ),
+              )}
             </div>
           </div>
         </div>
@@ -2661,7 +2667,9 @@ function MarkPaidDialog({ item, busy, error, onCancel, onConfirm }) {
       return;
     }
     if (!paymentVerified) {
-      setLocalError("Confirm that the payout has already been completed and verified.");
+      setLocalError(
+        "Confirm that the payout has already been completed and verified.",
+      );
       return;
     }
     setLocalError("");
@@ -2674,18 +2682,26 @@ function MarkPaidDialog({ item, busy, error, onCancel, onConfirm }) {
         onSubmit={submit}
         className="w-full max-w-md rounded-2xl border border-white/10 bg-[#0d2a20] p-6 shadow-2xl"
       >
-        <h2 className="text-lg font-bold text-white">Confirm withdrawal payment</h2>
+        <h2 className="text-lg font-bold text-white">
+          Confirm withdrawal payment
+        </h2>
         <p className="mt-1 break-all text-[11px] text-slate-500">
           {item.id} · ৳ {money(item.amount)}
         </p>
         <p className="mt-3 text-xs leading-5 text-slate-400">
-          Enter the transaction ID from the payment provider. This records a payout that has already been completed; it does not send money.
+          Enter the transaction ID from the payment provider. This records a
+          payout that has already been completed; it does not send money.
         </p>
         <label className="mt-4 block">
-          <span className="mb-2 block text-xs font-medium text-slate-300">Payout TrxID</span>
+          <span className="mb-2 block text-xs font-medium text-slate-300">
+            Payout TrxID
+          </span>
           <input
             value={trxId}
-            onChange={(event) => { setTrxId(event.target.value); setLocalError(""); }}
+            onChange={(event) => {
+              setTrxId(event.target.value);
+              setLocalError("");
+            }}
             maxLength={100}
             autoFocus
             placeholder="Enter payment transaction ID"
@@ -2696,13 +2712,21 @@ function MarkPaidDialog({ item, busy, error, onCancel, onConfirm }) {
           <input
             type="checkbox"
             checked={paymentVerified}
-            onChange={(event) => { setPaymentVerified(event.target.checked); setLocalError(""); }}
+            onChange={(event) => {
+              setPaymentVerified(event.target.checked);
+              setLocalError("");
+            }}
             className="mt-1 h-4 w-4 accent-lime-300"
           />
-          <span>I confirm that the money has already been sent and the payment is verified.</span>
+          <span>
+            I confirm that the money has already been sent and the payment is
+            verified.
+          </span>
         </label>
         {(localError || error) && (
-          <p role="alert" className="mt-3 text-xs text-rose-300">{localError || error}</p>
+          <p role="alert" className="mt-3 text-xs text-rose-300">
+            {localError || error}
+          </p>
         )}
         <div className="mt-5 flex gap-3">
           <button
@@ -2710,12 +2734,16 @@ function MarkPaidDialog({ item, busy, error, onCancel, onConfirm }) {
             onClick={onCancel}
             disabled={busy}
             className="w-full rounded-xl border border-white/10 px-4 py-3 text-sm font-semibold text-slate-300 hover:bg-white/[0.05] disabled:opacity-50"
-          >Cancel</button>
+          >
+            Cancel
+          </button>
           <button
             type="submit"
             disabled={busy}
             className="w-full rounded-xl bg-lime-300 px-4 py-3 text-sm font-bold text-[#09251a] disabled:opacity-50"
-          >{busy ? "Please wait..." : "Confirm Paid"}</button>
+          >
+            {busy ? "Please wait..." : "Confirm Paid"}
+          </button>
         </div>
       </form>
     </div>
@@ -2834,7 +2862,10 @@ function AdminUsers({ token, onNotice }) {
               className="flex flex-col gap-3 rounded-2xl border border-white/[0.08] bg-[#081f18] p-4 sm:flex-row sm:items-center"
             >
               <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-lime-300/10 text-sm font-bold text-lime-300">
-                {(user.name || user.phone || "?").trim().charAt(0).toUpperCase()}
+                {(user.name || user.phone || "?")
+                  .trim()
+                  .charAt(0)
+                  .toUpperCase()}
               </span>
               <div className="min-w-0 flex-1">
                 <p className="flex flex-wrap items-center gap-2 text-sm font-semibold">
@@ -3083,7 +3114,9 @@ function AdminPage({ token, onNotice, onWalletRefresh }) {
       setDialog(null);
       onNotice?.(result.message || "Withdrawal marked as paid.");
       await loadRequests("withdrawals", filter);
-      try { await onWalletRefresh?.(); } catch (refreshError) {}
+      try {
+        await onWalletRefresh?.();
+      } catch (refreshError) {}
     } catch (err) {
       setDialogError(err.message || "Unable to mark this withdrawal as paid.");
     } finally {
@@ -3158,206 +3191,215 @@ function AdminPage({ token, onNotice, onWalletRefresh }) {
         <AdminUsers token={token} onNotice={onNotice} />
       ) : (
         <>
-      <div className="mb-5 grid grid-cols-1 gap-3 sm:grid-cols-3">
-        <div className="rounded-2xl border border-amber-300/15 bg-amber-300/[0.05] p-4">
-          <p className="text-xs text-slate-500">Pending Requests</p>
-          <p className="mt-2 text-2xl font-extrabold text-amber-200">
-            {pending}
-          </p>
-        </div>
-        <div className="rounded-2xl border border-lime-300/15 bg-lime-300/[0.05] p-4">
-          <p className="text-xs text-slate-500">
-            {isPayoutNumbers ? "Verified" : "Approved"}
-          </p>
-          <p className="mt-2 text-2xl font-extrabold text-lime-200">
-            {approved}
-          </p>
-        </div>
-        <div className="rounded-2xl border border-rose-300/15 bg-rose-300/[0.05] p-4">
-          <p className="text-xs text-slate-500">Rejected</p>
-          <p className="mt-2 text-2xl font-extrabold text-rose-200">
-            {rejected}
-          </p>
-        </div>
-      </div>
-      <Panel>
-        <div className="mb-5 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-          <div>
-            <h2 className="font-bold">{noun} Requests</h2>
-            <p className="mt-1 text-xs text-slate-500">
-              Requests are fetched from the database.
-            </p>
+          <div className="mb-5 grid grid-cols-1 gap-3 sm:grid-cols-3">
+            <div className="rounded-2xl border border-amber-300/15 bg-amber-300/[0.05] p-4">
+              <p className="text-xs text-slate-500">Pending Requests</p>
+              <p className="mt-2 text-2xl font-extrabold text-amber-200">
+                {pending}
+              </p>
+            </div>
+            <div className="rounded-2xl border border-lime-300/15 bg-lime-300/[0.05] p-4">
+              <p className="text-xs text-slate-500">
+                {isPayoutNumbers ? "Verified" : "Approved"}
+              </p>
+              <p className="mt-2 text-2xl font-extrabold text-lime-200">
+                {approved}
+              </p>
+            </div>
+            <div className="rounded-2xl border border-rose-300/15 bg-rose-300/[0.05] p-4">
+              <p className="text-xs text-slate-500">Rejected</p>
+              <p className="mt-2 text-2xl font-extrabold text-rose-200">
+                {rejected}
+              </p>
+            </div>
           </div>
-          <div className="flex gap-2">
-            <input
-              type="search"
-              value={search}
-              onChange={(event) => setSearch(event.target.value)}
-              placeholder="Search ID, phone, reference"
-              className="w-full rounded-xl border border-white/10 bg-[#081f18] px-3 py-3 text-xs text-white outline-none placeholder:text-slate-600 focus:border-lime-300/40"
-            />
-            <button
-              type="button"
-              onClick={() => loadRequests(kind, filter)}
-              className="rounded-xl border border-white/10 px-3 text-slate-300 hover:text-lime-300"
-              title="Refresh"
-            >
-              <RefreshCw size={17} />
-            </button>
-          </div>
-        </div>
-        <div className="mb-4 flex flex-wrap gap-2">
-          {[
-            { label: "Pending", value: "pending" },
-            {
-              label: isPayoutNumbers ? "Verified" : "Approved",
-              value: "approved",
-            },
-            ...(kind === "withdrawals" ? [{ label: "Paid", value: "paid" }] : []),
-            { label: "Rejected", value: "rejected" },
-            { label: "All", value: "all" },
-          ].map((option) => (
-            <button
-              key={option.value}
-              type="button"
-              onClick={() => setFilter(option.value)}
-              className={`rounded-lg px-3 py-2 text-[10px] font-semibold transition ${filter === option.value ? "bg-lime-300 text-[#09251a]" : "bg-white/[0.05] text-slate-400 hover:text-white"}`}
-            >
-              {option.label}
-            </button>
-          ))}
-        </div>
-        {error && (
-          <p
-            role="alert"
-            className="mb-4 rounded-xl border border-rose-300/20 bg-rose-300/10 p-3 text-xs text-rose-200"
-          >
-            {error}
-          </p>
-        )}
-        {loading ? (
-          <div className="py-10 text-center text-sm text-slate-400">
-            Loading {noun.toLowerCase()} requests...
-          </div>
-        ) : visible.length ? (
-          <div className="divide-y divide-white/[0.07]">
-            {visible.map((item) => (
-              <div
-                key={item.id}
-                className="flex flex-col gap-4 py-5 lg:flex-row lg:items-center"
-              >
-                <div className="min-w-0 flex-1">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="text-sm font-bold text-white">
-                      {noun} · {item.method}
-                    </span>
-                    <span
-                      className={`rounded-full border px-2.5 py-1 text-[9px] font-semibold ${item.status === "pending" ? "border-amber-300/20 bg-amber-300/10 text-amber-200" : item.status === "rejected" ? "border-rose-300/20 bg-rose-300/10 text-rose-200" : "border-lime-300/20 bg-lime-300/10 text-lime-200"}`}
-                    >
-                      {item.status}
-                    </span>
-                  </div>
-                  <p className="mt-1 break-all text-[10px] text-slate-500">
-                    Request ID: {item.id} · {item.date}
-                  </p>
-                  <p className="mt-2 break-all text-[10px] text-slate-400">
-                    User: {item.phone || `#${item.user_id || "—"}`} ·{" "}
-                    {isDeposits ? "Sender" : "Recipient"}:{" "}
-                    {item.account || "Not provided"}
-                  </p>
-                  {isDeposits && (
-                    <p className="mt-1 break-all text-[10px] text-slate-400">
-                      Transaction ID: {item.reference || "—"}
-                    </p>
-                  )}
-                  {!isDeposits && item.status === "paid" && item.reference && (
-                    <p className="mt-1 break-all text-[10px] text-lime-200">
-                      Payout TrxID: {item.reference}
-                    </p>
-                  )}
-                  {item.reviewNote && (
-                    <p className="mt-1 break-words text-[10px] text-slate-500">
-                      Review note: {item.reviewNote}
-                    </p>
-                  )}
-                </div>
-                <div className="flex items-center justify-between gap-4 lg:min-w-[210px] lg:flex-col lg:items-end">
-                  {!isPayoutNumbers && (
-                    <p className="text-base font-extrabold text-white">
-                      ৳ {money(item.amount)}
-                    </p>
-                  )}
-                  {kind === "withdrawals" && item.status === "approved" ? (
-                    <button
-                      type="button"
-                      onClick={() => { setDialogError(""); setDialog({ item, action: "paid" }); }}
-                      className="rounded-lg border border-lime-300/20 bg-lime-300/10 px-3 py-2 text-[10px] font-bold text-lime-200 hover:bg-lime-300/20"
-                    >
-                      Mark as Paid
-                    </button>
-                  ) : item.status === "pending" ? (
-                    <div className="flex gap-2">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setDialogError("");
-                          setDialog({ item, action: "approve" });
-                        }}
-                        className="rounded-lg border border-lime-300/20 bg-lime-300/10 px-3 py-2 text-[10px] font-bold text-lime-200 hover:bg-lime-300/20"
-                      >
-                        Approve
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setDialogError("");
-                          setDialog({ item, action: "reject" });
-                        }}
-                        className="rounded-lg border border-rose-300/20 bg-rose-300/10 px-3 py-2 text-[10px] font-bold text-rose-200 hover:bg-rose-300/20"
-                      >
-                        Reject
-                      </button>
-                    </div>
-                  ) : (
-                    <span className="text-[10px] text-slate-500">
-                      {item.status === "paid" ? "Payment completed" : `Reviewed: ${item.reviewedAt}`}
-                    </span>
-                  )}
-                </div>
+          <Panel>
+            <div className="mb-5 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <h2 className="font-bold">{noun} Requests</h2>
+                <p className="mt-1 text-xs text-slate-500">
+                  Requests are fetched from the database.
+                </p>
               </div>
-            ))}
-          </div>
-        ) : (
-          <EmptyState
-            icon={FileText}
-            title={`No ${noun.toLowerCase()} requests`}
-            description="There are no requests for this status filter."
-          />
-        )}
-      </Panel>
+              <div className="flex gap-2">
+                <input
+                  type="search"
+                  value={search}
+                  onChange={(event) => setSearch(event.target.value)}
+                  placeholder="Search ID, phone, reference"
+                  className="w-full rounded-xl border border-white/10 bg-[#081f18] px-3 py-3 text-xs text-white outline-none placeholder:text-slate-600 focus:border-lime-300/40"
+                />
+                <button
+                  type="button"
+                  onClick={() => loadRequests(kind, filter)}
+                  className="rounded-xl border border-white/10 px-3 text-slate-300 hover:text-lime-300"
+                  title="Refresh"
+                >
+                  <RefreshCw size={17} />
+                </button>
+              </div>
+            </div>
+            <div className="mb-4 flex flex-wrap gap-2">
+              {[
+                { label: "Pending", value: "pending" },
+                {
+                  label: isPayoutNumbers ? "Verified" : "Approved",
+                  value: "approved",
+                },
+                ...(kind === "withdrawals"
+                  ? [{ label: "Paid", value: "paid" }]
+                  : []),
+                { label: "Rejected", value: "rejected" },
+                { label: "All", value: "all" },
+              ].map((option) => (
+                <button
+                  key={option.value}
+                  type="button"
+                  onClick={() => setFilter(option.value)}
+                  className={`rounded-lg px-3 py-2 text-[10px] font-semibold transition ${filter === option.value ? "bg-lime-300 text-[#09251a]" : "bg-white/[0.05] text-slate-400 hover:text-white"}`}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+            {error && (
+              <p
+                role="alert"
+                className="mb-4 rounded-xl border border-rose-300/20 bg-rose-300/10 p-3 text-xs text-rose-200"
+              >
+                {error}
+              </p>
+            )}
+            {loading ? (
+              <div className="py-10 text-center text-sm text-slate-400">
+                Loading {noun.toLowerCase()} requests...
+              </div>
+            ) : visible.length ? (
+              <div className="divide-y divide-white/[0.07]">
+                {visible.map((item) => (
+                  <div
+                    key={item.id}
+                    className="flex flex-col gap-4 py-5 lg:flex-row lg:items-center"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="text-sm font-bold text-white">
+                          {noun} · {item.method}
+                        </span>
+                        <span
+                          className={`rounded-full border px-2.5 py-1 text-[9px] font-semibold ${item.status === "pending" ? "border-amber-300/20 bg-amber-300/10 text-amber-200" : item.status === "rejected" ? "border-rose-300/20 bg-rose-300/10 text-rose-200" : "border-lime-300/20 bg-lime-300/10 text-lime-200"}`}
+                        >
+                          {item.status}
+                        </span>
+                      </div>
+                      <p className="mt-1 break-all text-[10px] text-slate-500">
+                        Request ID: {item.id} · {item.date}
+                      </p>
+                      <p className="mt-2 break-all text-[10px] text-slate-400">
+                        User: {item.phone || `#${item.user_id || "—"}`} ·{" "}
+                        {isDeposits ? "Sender" : "Recipient"}:{" "}
+                        {item.account || "Not provided"}
+                      </p>
+                      {isDeposits && (
+                        <p className="mt-1 break-all text-[10px] text-slate-400">
+                          Transaction ID: {item.reference || "—"}
+                        </p>
+                      )}
+                      {!isDeposits &&
+                        item.status === "paid" &&
+                        item.reference && (
+                          <p className="mt-1 break-all text-[10px] text-lime-200">
+                            Payout TrxID: {item.reference}
+                          </p>
+                        )}
+                      {item.reviewNote && (
+                        <p className="mt-1 break-words text-[10px] text-slate-500">
+                          Review note: {item.reviewNote}
+                        </p>
+                      )}
+                    </div>
+                    <div className="flex items-center justify-between gap-4 lg:min-w-[210px] lg:flex-col lg:items-end">
+                      {!isPayoutNumbers && (
+                        <p className="text-base font-extrabold text-white">
+                          ৳ {money(item.amount)}
+                        </p>
+                      )}
+                      {kind === "withdrawals" && item.status === "approved" ? (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setDialogError("");
+                            setDialog({ item, action: "paid" });
+                          }}
+                          className="rounded-lg border border-lime-300/20 bg-lime-300/10 px-3 py-2 text-[10px] font-bold text-lime-200 hover:bg-lime-300/20"
+                        >
+                          Mark as Paid
+                        </button>
+                      ) : item.status === "pending" ? (
+                        <div className="flex gap-2">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setDialogError("");
+                              setDialog({ item, action: "approve" });
+                            }}
+                            className="rounded-lg border border-lime-300/20 bg-lime-300/10 px-3 py-2 text-[10px] font-bold text-lime-200 hover:bg-lime-300/20"
+                          >
+                            Approve
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setDialogError("");
+                              setDialog({ item, action: "reject" });
+                            }}
+                            className="rounded-lg border border-rose-300/20 bg-rose-300/10 px-3 py-2 text-[10px] font-bold text-rose-200 hover:bg-rose-300/20"
+                          >
+                            Reject
+                          </button>
+                        </div>
+                      ) : (
+                        <span className="text-[10px] text-slate-500">
+                          {item.status === "paid"
+                            ? "Payment completed"
+                            : `Reviewed: ${item.reviewedAt}`}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <EmptyState
+                icon={FileText}
+                title={`No ${noun.toLowerCase()} requests`}
+                description="There are no requests for this status filter."
+              />
+            )}
+          </Panel>
 
-      {dialog && dialog.action === "paid" && (
-        <MarkPaidDialog
-          key={`${dialog.item.id}-paid`}
-          item={dialog.item}
-          busy={busy}
-          error={dialogError}
-          onCancel={() => setDialog(null)}
-          onConfirm={confirmMarkPaid}
-        />
-      )}
-      {dialog && dialog.action !== "paid" && (
-        <ReasonDialog
-          key={`${dialog.item.id}-${dialog.action}`}
-          item={dialog.item}
-          action={dialog.action}
-          kind={kind}
-          busy={busy}
-          error={dialogError}
-          onCancel={() => setDialog(null)}
-          onConfirm={confirmReview}
-        />
-      )}
+          {dialog && dialog.action === "paid" && (
+            <MarkPaidDialog
+              key={`${dialog.item.id}-paid`}
+              item={dialog.item}
+              busy={busy}
+              error={dialogError}
+              onCancel={() => setDialog(null)}
+              onConfirm={confirmMarkPaid}
+            />
+          )}
+          {dialog && dialog.action !== "paid" && (
+            <ReasonDialog
+              key={`${dialog.item.id}-${dialog.action}`}
+              item={dialog.item}
+              action={dialog.action}
+              kind={kind}
+              busy={busy}
+              error={dialogError}
+              onCancel={() => setDialog(null)}
+              onConfirm={confirmReview}
+            />
+          )}
         </>
       )}
     </>
